@@ -132,7 +132,8 @@ fn usz? TlsTransport.read(&self, char[] buf, Duration timeout) @dynamic
 	}
 }
 
-// All of data or a fault. After a fault the TlsTransport is unusable: the data of the failed call may or may not be on
+// All of data or a fault. After the peer's close_notify this is CLOSED: TLS would allow sending on, but a peer that has
+// closed its side is not expected to read. After a fault the TlsTransport is unusable: the data of the failed call may or may not be on
 // its way, and every later read or write returns the same fault (reconnect instead of retrying).
 fn void? TlsTransport.write(&self, char[] data, Duration timeout) @dynamic
 {
@@ -142,7 +143,17 @@ fn void? TlsTransport.write(&self, char[] data, Duration timeout) @dynamic
 	while (done < data.len)
 	{
 		usz piece = min((usz)data.len - done, WRITE_PIECE);
-		self.conn.write(data[done:piece])!;
+		usz? w = self.conn.write(data[done:piece]);
+		if (catch err = w)
+		{
+			// the engine wants input first (the peer started something that needs an answer): get it and try again
+			if (err == WANT_INPUT)
+			{
+				self.pull(timeout)!;
+				continue;
+			}
+			return err~;
+		}
 		self.flush(timeout)!;
 		done += piece;
 	}
