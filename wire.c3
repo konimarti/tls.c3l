@@ -103,8 +103,8 @@ fn char[]? encode_alpn(String[] protos, Allocator allocator)
 	{
 		if (p.len == 0 || p.len > 255) return BAD_ALPN~;
 		total += 1 + p.len;
+		if (total > 65535) return BAD_ALPN~;
 	}
-	if (total > 65535) return BAD_ALPN~;
 	if (total == 0) return (char[]){};
 	char[] out = alloc::alloc_array_try(allocator, char, (sz)total)!;
 	usz at = 0;

@@ -212,3 +212,14 @@ fn void test_wire_alpn_total_too_large() @test
 	char[] ok = wire::encode_alpn(many[:255], tmem)!!;
 	assert(ok.len == 255 * 256);
 }
+
+fn void test_wire_alpn_total_checked_while_summing() @test
+{
+	// many names: the running total must be rejected as soon as it passes 65535, never wrapped or allocated
+	char[255] name;
+	name[..] = 'y';
+	String s = (String)name[..];
+	String[1000] many;
+	many[..] = s;
+	assert(@catch(wire::encode_alpn(many[..], tmem)) == wire::BAD_ALPN);
+}
