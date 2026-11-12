@@ -11,6 +11,8 @@ interface Transport
 	// an empty buf returns 0 without a syscall.
 	fn usz? read(char[] buf, Duration timeout);
 	// Writes ALL of data or faults (TIMEOUT, CLOSED). `timeout` bounds each wait for writability. Empty data: no-op.
+	// A fault may leave part of data sent, so a plain transport can usually try again; a TlsTransport cannot (its
+	// stream would have a gap) and stays failed: after a write fault, reconnect.
 	fn void? write(char[] data, Duration timeout);
 	// Idempotent. Releases the OS handle (a TlsTransport sends close_notify first).
 	fn void? close();

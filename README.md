@@ -47,6 +47,10 @@ usz n = t.read(&buf, 5 * time::SEC)!;
 t.close()!;
 ```
 
+A fault from `write` on a `TlsTransport` is final: part of the data may have been sent, and TLS cannot
+continue after a gap, so every later call reports the same fault and the connection has to be made again.
+A `read` that times out can simply be called again.
+
 The tests in `src/test` that talk to real peers need `tests/pki/make-pki.sh`
 and `python3 -I tests/peer/run.py start` first (`stop` afterwards); without them
 those tests print `SKIP` and pass.
