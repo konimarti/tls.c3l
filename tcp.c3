@@ -6,7 +6,9 @@ import libc;
 // Largest piece handed to one send(): after poll() reports the socket writable, a send of this size cannot
 // block for long, so the timeout stays meaningful for large writes.
 const usz TCP_WRITE_CHUNK = 16384;
-const CInt EPIPE = 32; // Linux errno value; the other platforms do not use it
+const CInt EPIPE = 32; // the same value on Linux and macOS
+const CInt DARWIN_SOL_SOCKET = 0xffff;
+const CInt DARWIN_SO_NOSIGPIPE = 0x1022;
 
 struct TcpTransport (Transport)
 {
@@ -17,11 +19,25 @@ struct TcpTransport (Transport)
 fn TcpTransport? tcp_connect(String host, int port, Duration timeout = time::DURATION_ZERO)
 {
 	TcpTransport t = { .sock = tcp::connect(host, port, timeout)! };
+	no_sigpipe(t.sock.sock);
 	return t;
 }
 
+// macOS has no MSG_NOSIGNAL: a write to a closed peer would kill the process with SIGPIPE unless the socket says no.
+fn void no_sigpipe(NativeSocket sock)
+{
+$if env::DARWIN:
+	CInt on = 1;
+	os::setsockopt(sock, DARWIN_SOL_SOCKET, DARWIN_SO_NOSIGPIPE, &on, CInt::size);
+$endif
+}
+
 // Wraps a socket obtained elsewhere (for example from tcp::accept).
-fn TcpTransport tcp_wrap(TcpSocket sock) => { .sock = sock };
+fn TcpTransport tcp_wrap(TcpSocket sock)
+{
+	no_sigpipe(sock.sock);
+	return { .sock = sock };
+}
 
 // Waits until the socket is ready for `events`. DURATION_ZERO (or less) waits forever.
 fn void? tcp_wait(NativeSocket sock, PollSubscribe events, Duration timeout)
@@ -65,8 +81,13 @@ fn usz? TcpTransport.read(&self, char[] buf, Duration timeout) @dynamic
 // One send() that never raises SIGPIPE where the platform lets us ask for that.
 fn sz? tcp_send(TcpSocket* sock, char[] chunk)
 {
+$if env::LINUX || env::DARWIN:
 $if env::LINUX:
-	sz n = libc::send(sock.sock, chunk.ptr, chunk.len, os::MSG_NOSIGNAL);
+	CInt flags = os::MSG_NOSIGNAL;
+$else
+	CInt flags = 0; // SO_NOSIGPIPE is set on the socket
+$endif
+	sz n = libc::send(sock.sock, chunk.ptr, chunk.len, flags);
 	if (n < 0)
 	{
 		Errno e = libc::errno();
