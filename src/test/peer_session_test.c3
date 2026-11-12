@@ -64,10 +64,13 @@ fn void test_peer_session_resumption_tls12_with_session_ids() @test
 fn void test_peer_session_blob_layout_and_wiping() @test
 {
 	if (!peer_support::peers_ready()) return;
+	Context ctx = tls::new_client_context(&&cached())!!;
+	defer ctx.free();
 	char[] blob = first_session("resume13");
 	defer free(blob);
-	// the first 32 bytes name the server the session belongs to
-	assert(blob[:32] == sha256::hash("localhost")[..]);
+	// the first 32 bytes bind the session to the name and to the verification settings of the context
+	assert(blob[:32] == tls::session_binding("localhost", ctx.session_tag)[..]);
+	assert(blob[:32] != sha256::hash("localhost")[..]);
 	tls::wipe_session(blob);
 	foreach (b : blob) assert(b == 0);
 }
@@ -137,7 +140,7 @@ fn void test_peer_session_needs_the_cache_option() @test
 	assert(@catch(p.conn.import_session(blob[..])) == tls::CONFIG_INVALID);
 }
 
-fn void test_peer_session_export_and_import_at_the_wrong_time() @test
+fn void test_peer_session_export_at_the_wrong_time() @test
 {
 	if (!peer_support::peers_ready()) return;
 	Context ctx = tls::new_client_context(&&cached())!!;
@@ -146,11 +149,6 @@ fn void test_peer_session_export_and_import_at_the_wrong_time() @test
 	defer c.free();
 	// nothing to export before the handshake
 	assert(@catch(c.export_session()) == tls::NOT_CONNECTED);
-	// and a session can no longer be offered once it is under way
-	assert(!c.handshake()!!);
-	char[64] blob;
-	blob[:32][..] = sha256::hash("localhost")[..];
-	assert(@catch(c.import_session(blob[..])) == tls::SESSION_INVALID);
 }
 
 fn void test_peer_session_resumption_still_checks_the_pin() @test
@@ -277,4 +275,151 @@ fn void test_peer_key_update_requested_by_the_peer() @test
 	command("keyupdate", "one more\n");
 	String more = p.receive(&buf, 5 * time::SEC);
 	assert(more.contains("one more"), "got '%s'", more);
+}
+
+// ---- a session is only good under the settings it was made with ----
+
+fn char[] session_under(String scenario, ClientConfig cfg, String name)
+{
+	Probe p;
+	defer p.release();
+	p.start(scenario, cfg, name);
+	assert(p.done, "fault %s", p.result);
+	assert(p.request_page().starts_with("HTTP/1.0 200"));
+	return p.conn.export_session()!!;
+}
+
+fn void test_peer_session_from_an_unchecked_connection_cannot_be_exported() @test
+{
+	if (!peer_support::peers_ready()) return;
+	ClientConfig lax = { .verify = INSECURE_NONE, .session_cache = true };
+	Probe p;
+	defer p.release();
+	p.start("resume13", lax, "localhost");
+	assert(p.done);
+	assert(p.request_page().starts_with("HTTP/1.0 200"));
+	// nothing was verified, so the session is not worth handing to a connection that will trust it
+	assert(@catch(p.conn.export_session()) == tls::SESSION_INVALID);
+}
+
+fn void test_peer_session_is_bound_to_the_verification_settings() @test
+{
+	if (!peer_support::peers_ready()) return;
+	char[] blob = session_under("resume13", cached(), "localhost");
+	defer
+	{
+		tls::wipe_session(blob);
+		free(blob);
+	}
+	// verification of the chain but not of the name
+	ClientConfig chain_only = cached();
+	chain_only.verify = CHAIN_ONLY;
+	{
+		Probe p;
+		defer p.release();
+		p.start("resume13", chain_only, "localhost", blob);
+		assert(p.import_result == tls::SESSION_INVALID);
+	}
+	// another trust anchor
+	ClientConfig other_ca = { .ca_file = peer_support::pki_file("otherca.pem"), .session_cache = true };
+	{
+		Probe p;
+		defer p.release();
+		p.start("resume13", other_ca, "localhost", blob);
+		assert(p.import_result == tls::SESSION_INVALID);
+	}
+	// a pin that the session was not made under
+	ClientConfig pinned = cached();
+	pinned.pin_sha256 = hex_pin("SHA256_server");
+	{
+		Probe p;
+		defer p.release();
+		p.start("resume13", pinned, "localhost", blob);
+		assert(p.import_result == tls::SESSION_INVALID);
+	}
+	// a client that cannot verify the server (system store only) must get the full handshake, and its failure
+	ClientConfig strict_without_anchor = { .session_cache = true };
+	{
+		Probe p;
+		defer p.release();
+		p.start("resume13", strict_without_anchor, "localhost", blob);
+		assert(p.import_result == tls::SESSION_INVALID);
+		assert(!p.done);
+		assert(p.result == tls::CERT_UNTRUSTED, "fault %s", p.result);
+	}
+	// the same settings take it
+	Probe q;
+	defer q.release();
+	q.start("resume13", cached(), "localhost", blob);
+	assert(!q.import_result);
+	assert(q.conn.session_reused());
+}
+
+fn void test_peer_session_name_binding_ignores_case() @test
+{
+	if (!peer_support::peers_ready()) return;
+	char[] blob = session_under("resume13", cached(), "localhost");
+	defer
+	{
+		tls::wipe_session(blob);
+		free(blob);
+	}
+	Probe p;
+	defer p.release();
+	p.start("resume13", cached(), "LOCALHOST", blob);
+	assert(!p.import_result, "import: %s", p.import_result);
+	assert(p.done);
+	assert(p.conn.session_reused());
+}
+
+fn void test_peer_session_needs_a_name() @test
+{
+	if (!peer_support::peers_ready()) return;
+	// without a name a session could not be tied to any host
+	ClientConfig anonymous = cached();
+	anonymous.verify = CHAIN_ONLY;
+	Probe p;
+	defer p.release();
+	p.start("resume13", anonymous, "");
+	assert(p.done);
+	assert(p.request_page().starts_with("HTTP/1.0 200"));
+	assert(@catch(p.conn.export_session()) == tls::CONFIG_INVALID);
+	char[64] blob;
+	Context ctx = tls::new_client_context(&anonymous)!!;
+	defer ctx.free();
+	Conn c = ctx.new_client_conn("")!!;
+	defer c.free();
+	assert(@catch(c.import_session(blob[..])) == tls::CONFIG_INVALID);
+}
+
+fn void test_peer_session_tls13_resumption_checks_the_pin_too() @test
+{
+	if (!peer_support::peers_ready()) return;
+	char[] pin = hex_pin("SHA256_server");
+	ClientConfig cfg = cached();
+	cfg.pin_sha256 = pin;
+	char[] blob = session_under("resume13", cfg, "localhost");
+	defer
+	{
+		tls::wipe_session(blob);
+		free(blob);
+	}
+	{
+		Probe q;
+		defer q.release();
+		q.start("resume13", cfg, "localhost", blob);
+		assert(q.done, "fault %s", q.result);
+		assert(q.conn.session_reused());
+	}
+	// the tag includes the pin: a different pin does not even get to import
+	char[32] wrong;
+	wrong[..] = pin[..];
+	wrong[0] ^= 1;
+	cfg.pin_sha256 = wrong[..];
+	Probe r;
+	defer r.release();
+	r.start("resume13", cfg, "localhost", blob);
+	assert(r.import_result == tls::SESSION_INVALID);
+	assert(!r.done);
+	assert(r.result == tls::PIN_MISMATCH, "fault %s", r.result);
 }

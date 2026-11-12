@@ -34,6 +34,7 @@ struct Context
 	bool require_alpn;
 	bool has_alpn;
 	bool session_cache;
+	char[32] session_tag;        // client: what a session was verified under (mode, trust, pin, versions)
 	AlpnList* alpn_list;         // server: the protocols offered (owned)
 	bool system_roots_loaded;    // whether the system trust store was added
 	Allocator allocator;
@@ -149,6 +150,7 @@ $endif
 	}
 
 	Context c = {
+		.session_tag = session_tag(cfg),
 		.handle = ctx,
 		.verify = cfg.verify,
 		.require_alpn = cfg.require_alpn,
@@ -249,7 +251,8 @@ struct Conn
 	bool close_notify_received;
 	bool close_notify_sent;
 	bool pin_checked;            // the configured pin has been compared with the peer certificate
-	char[32] name_hash;          // SHA-256 of the name this connection verifies; sessions are bound to it
+	char[32] name_hash;          // binds sessions to the name and the verification settings (see session_binding)
+	bool has_name;               // a name was given; sessions need one
 	bool failed;                 // sticky: every later call returns the stored fault
 	fault failure;
 	char last_alert;             // code of the last received fatal alert, 0 = none
@@ -292,7 +295,8 @@ fn Conn? Context.new_client_conn(&self, String server_name, Allocator allocator 
 			if (ossl::x509_verify_param_set1_ip_asc(ossl::ssl_get0_param(ssl), zname) != 1) return ossl_fail(CONFIG_INVALID)~;
 		}
 	}
-	conn.name_hash = sha256::hash(server_name.len > 0 ? plan.name : "");
+	conn.has_name = server_name.len > 0;
+	conn.name_hash = session_binding(plan.name, self.session_tag);
 	return conn;
 }
 
@@ -532,14 +536,66 @@ fn char[]? Conn.peer_cert_der(&self, Allocator allocator = mem)
 	return der;
 }
 
+// A 32-byte tag for everything that decides whether a peer was acceptable: verification mode, trust anchors, pin and
+// protocol versions. A session is only valid under the settings it was made with.
+fn char[32] session_tag(ClientConfig* cfg)
+{
+	Sha256 h;
+	h.init();
+	char[8] fixed = { (char)cfg.verify.ordinal, cfg.also_system_roots ? 1 : 0, 0, 0, 0, 0, 0, 0 };
+	int lo = cfg.min_wire();
+	int hi = cfg.max_wire();
+	fixed[2] = (char)(lo >> 8);
+	fixed[3] = (char)lo;
+	fixed[4] = (char)(hi >> 8);
+	fixed[5] = (char)hi;
+	h.update(fixed[..]);
+	tag_field(&h, (char[])cfg.ca_file);
+	tag_field(&h, (char[])cfg.ca_dir);
+	tag_field(&h, cfg.pin_sha256);
+	return h.final();
+}
+
+// Length first, so two fields cannot trade bytes and give the same tag.
+fn void tag_field(Sha256* h, char[] data)
+{
+	char[4] len = { (char)(data.len >> 24), (char)(data.len >> 16), (char)(data.len >> 8), (char)data.len };
+	h.update(len[..]);
+	h.update(data);
+}
+
+// What a session blob is bound to: the name (without case) and the verification settings of the context.
+fn char[32] session_binding(String name, char[32] tag)
+{
+	char[256] lower;
+	usz n = min((usz)name.len, (usz)lower.len);
+	for (usz i = 0; i < n; i++)
+	{
+		char c = name[i];
+		lower[i] = (c >= 'A' && c <= 'Z') ? c + 32 : c;
+	}
+	Sha256 h;
+	h.init();
+	tag_field(&h, lower[:n]);
+	h.update(tag[..]);
+	return h.final();
+}
+
 // The session of this connection as a blob for a later connection to the same server: SHA-256 of the verified name
 // (32 bytes) followed by the DER session. It holds the session's secrets: treat it like a key, keep it only as long as
 // needed and wipe it (wipe_session) when done. A TLS 1.3 session only exists once the server's ticket has been read, so
 // read from the connection before exporting; before that this is SESSION_INVALID. Needs ClientConfig.session_cache.
 fn char[]? Conn.export_session(&self, Allocator allocator = mem)
 {
-	if (!self.ctx.session_cache || self.server) return CONFIG_INVALID~;
+	if (!self.ctx.session_cache || self.server || !self.has_name) return CONFIG_INVALID~;
 	if (!self.handshake_done) return NOT_CONNECTED~;
+	// only a session from a connection that really checked its peer can be handed on: certificate chain and name, or a pin
+	bool checked = self.ctx.pin_sha256.len > 0 && self.pin_checked;
+	if (self.ctx.verify == FULL || self.ctx.verify == CHAIN_ONLY)
+	{
+		checked = checked || self.verify_result() == 0;
+	}
+	if (!checked) return SESSION_INVALID~;
 	defer ossl::err_clear_error();
 	ossl::SslSession* sess = ossl::ssl_get1_session(self.ssl);
 	if (!sess) return SESSION_INVALID~;
@@ -564,7 +620,7 @@ fn char[]? Conn.export_session(&self, Allocator allocator = mem)
 // check session_reused() afterwards if that matters.
 fn void? Conn.import_session(&self, char[] blob)
 {
-	if (!self.ctx.session_cache || self.server || self.handshake_done) return CONFIG_INVALID~;
+	if (!self.ctx.session_cache || self.server || !self.has_name || self.handshake_done) return CONFIG_INVALID~;
 	if (blob.len <= 32) return SESSION_INVALID~;
 	// bound to the name: a session from another server must not silently turn into a handshake in another context
 	if (ossl::crypto_memcmp(blob.ptr, &self.name_hash, 32) != 0) return SESSION_INVALID~;
