@@ -99,28 +99,44 @@ fn void test_peer_alpn_required_but_not_selected_is_a_fault() @test
 	assert(t.t.conn.alpn_selected() == "h2");
 }
 
+fn void offer_and_wait(String scenario, String[] names)
+{
+	ClientConfig cfg = with_ca();
+	cfg.alpn = names;
+	Session s;
+	defer s.close();
+	// the server knows none of these: it refuses, but it has seen the offer
+	assert(@catch(s.open(scenario, cfg, "localhost")) == tls::ALERT_RECEIVED);
+}
+
 fn void test_peer_alpn_lists_reach_the_peer() @test
 {
 	if (!peer_support::peers_ready()) return;
-	usz mqtt = peer_support::log_count("alpn", "mqtt");
-	usz amzn = peer_support::log_count("alpn", "x-amzn-mqtt-ca");
-	ClientConfig cfg = with_ca();
-	cfg.alpn = { "mqtt", "x-amzn-mqtt-ca" };
-	{
-		Session s;
-		defer s.close();
-		// the server knows neither: it refuses, but it has seen the offer
-		assert(@catch(s.open("alpn", cfg, "localhost")) == tls::ALERT_RECEIVED);
-	}
-	usz after_mqtt = mqtt;
+	// "mqtt" is a substring of "x-amzn-mqtt-ca": the trace prints one name per line, so whole lines are counted
+	usz mqtt = peer_support::log_count_line("alpn", "mqtt");
+	usz amzn = peer_support::log_count_line("alpn", "x-amzn-mqtt-ca");
+	String[1] only_amzn = { "x-amzn-mqtt-ca" };
+	offer_and_wait("alpn", only_amzn[..]);
 	usz after_amzn = amzn;
-	for (int i = 0; i < 40 && (after_mqtt == mqtt || after_amzn == amzn); i++)
+	for (int i = 0; i < 40 && after_amzn == amzn; i++)
 	{
 		thread::sleep_ms(50)!!;
-		after_mqtt = peer_support::log_count("alpn", "mqtt");
-		after_amzn = peer_support::log_count("alpn", "x-amzn-mqtt-ca");
+		after_amzn = peer_support::log_count_line("alpn", "x-amzn-mqtt-ca");
 	}
-	assert(after_mqtt > mqtt && after_amzn > amzn, "mqtt %d -> %d, amzn %d -> %d", mqtt, after_mqtt, amzn, after_amzn);
+	assert(after_amzn == amzn + 1, "x-amzn-mqtt-ca lines %d -> %d", amzn, after_amzn);
+	// the log is ordered: the whole offer has been printed, and it held no "mqtt"
+	assert(peer_support::log_count_line("alpn", "mqtt") == mqtt);
+	// both names offered: both lines appear
+	String[2] both = { "mqtt", "x-amzn-mqtt-ca" };
+	offer_and_wait("alpn", both[..]);
+	usz after_mqtt = mqtt;
+	for (int i = 0; i < 40 && after_mqtt == mqtt; i++)
+	{
+		thread::sleep_ms(50)!!;
+		after_mqtt = peer_support::log_count_line("alpn", "mqtt");
+	}
+	assert(after_mqtt == mqtt + 1, "mqtt lines %d -> %d", mqtt, after_mqtt);
+	assert(peer_support::log_count_line("alpn", "x-amzn-mqtt-ca") == after_amzn + 1);
 }
 
 fn void test_peer_alpn_not_offered_gives_an_empty_slice() @test

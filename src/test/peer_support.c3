@@ -60,3 +60,16 @@ fn usz log_count(String scenario, String needle)
 
 // A file of the test PKI.
 fn String pki_file(String name) => state_value("DIR").tconcat("/").tconcat(name);
+
+// How many lines of the peer's log consist of exactly `text` (after trimming), e.g. one offered ALPN name per line.
+fn usz log_count_line(String scenario, String text)
+{
+	String path = state_value("OUT").tconcat("/").tconcat(scenario).tconcat(".log");
+	if (!file::is_file(path)) return 0;
+	usz count = 0;
+	foreach (line : ((String)file::load_temp(path)!!).tsplit("\n"))
+	{
+		if (line.trim() == text) count++;
+	}
+	return count;
+}
