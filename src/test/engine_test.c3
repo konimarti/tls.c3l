@@ -541,3 +541,44 @@ fn void test_engine_address_with_a_leading_zero_is_refused() @test
 	defer ctx.free();
 	assert(@catch(ctx.new_client_conn("01.2.3.4")) == tls::CONFIG_INVALID);
 }
+
+fn void test_engine_context_options_are_set() @test
+{
+	// compression and renegotiation are off, and the chain depth limit is in place
+	Context ctx = client_ctx({});
+	defer ctx.free();
+	ulong options = ossl::ssl_ctx_get_options(ctx.handle);
+	assert((options & ossl::SSL_OP_NO_COMPRESSION) != 0);
+	assert((options & ossl::SSL_OP_NO_RENEGOTIATION) != 0);
+	assert(ossl::ssl_ctx_get_verify_depth(ctx.handle) == tls::DEFAULT_CHAIN_DEPTH);
+	Context deep = client_ctx({ .max_chain_depth = 3 });
+	defer deep.free();
+	assert(ossl::ssl_ctx_get_verify_depth(deep.handle) == 3);
+}
+
+fn void test_engine_hostname_checks_are_wired_to_the_connection() @test
+{
+	// full verification asks OpenSSL for a name check, chain-only does not: the verify parameters of the SSL object say so
+	Context full = client_ctx({});
+	defer full.free();
+	Conn named = full.new_client_conn("example.com")!!;
+	defer named.free();
+	CUInt flags = ossl::x509_verify_param_get_hostflags(ossl::ssl_get0_param(named.ssl));
+	assert(flags == (ossl::X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS | ossl::X509_CHECK_FLAG_NEVER_CHECK_SUBJECT));
+
+	Conn address = full.new_client_conn("127.0.0.1")!!;
+	defer address.free();
+	char* ip = (char*)ossl::x509_verify_param_get1_ip_asc(ossl::ssl_get0_param(address.ssl));
+	assert(ip != null);
+	assert(((ZString)ip).str_view() == "127.0.0.1");
+	ossl::crypto_free(ip, "", 0);
+
+	Context chain = client_ctx({ .verify = CHAIN_ONLY });
+	defer chain.free();
+	Conn loose = chain.new_client_conn("example.com")!!;
+	defer loose.free();
+	assert(ossl::x509_verify_param_get_hostflags(ossl::ssl_get0_param(loose.ssl)) == 0);
+	Conn loose_ip = chain.new_client_conn("127.0.0.1")!!;
+	defer loose_ip.free();
+	assert(ossl::x509_verify_param_get1_ip_asc(ossl::ssl_get0_param(loose_ip.ssl)) == null);
+}

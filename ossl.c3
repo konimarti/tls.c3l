@@ -55,6 +55,8 @@ extern fn SslCtx* ssl_ctx_new(SslMethod* m) @cname("SSL_CTX_new");
 extern fn void ssl_ctx_free(SslCtx* ctx) @cname("SSL_CTX_free");
 extern fn CLong ssl_ctx_ctrl(SslCtx* ctx, CInt cmd, CLong larg, void* parg) @cname("SSL_CTX_ctrl");
 extern fn ulong ssl_ctx_set_options(SslCtx* ctx, ulong op) @cname("SSL_CTX_set_options");
+extern fn ulong ssl_ctx_get_options(SslCtx* ctx) @cname("SSL_CTX_get_options");
+extern fn CInt ssl_ctx_get_verify_depth(SslCtx* ctx) @cname("SSL_CTX_get_verify_depth");
 extern fn void ssl_ctx_set_verify(SslCtx* ctx, CInt mode, void* cb) @cname("SSL_CTX_set_verify");
 extern fn CInt ssl_ctx_get_verify_mode(SslCtx* ctx) @cname("SSL_CTX_get_verify_mode");
 extern fn void ssl_ctx_set_verify_depth(SslCtx* ctx, CInt depth) @cname("SSL_CTX_set_verify_depth");
@@ -93,6 +95,9 @@ extern fn CInt ssl_set1_host(Ssl* s, CStr hostname) @cname("SSL_set1_host");
 extern fn void ssl_set_hostflags(Ssl* s, CUInt flags) @cname("SSL_set_hostflags");
 extern fn X509VerifyParam* ssl_get0_param(Ssl* s) @cname("SSL_get0_param");
 extern fn CInt x509_verify_param_set1_ip_asc(X509VerifyParam* p, CStr ipasc) @cname("X509_VERIFY_PARAM_set1_ip_asc");
+extern fn CUInt x509_verify_param_get_hostflags(X509VerifyParam* p) @cname("X509_VERIFY_PARAM_get_hostflags");
+extern fn CStr x509_verify_param_get1_ip_asc(X509VerifyParam* p) @cname("X509_VERIFY_PARAM_get1_ip_asc"); // owned: crypto_free
+extern fn void crypto_free(void* p, CStr file, CInt line) @cname("CRYPTO_free");
 extern fn CLong ssl_get_verify_result(Ssl* s) @cname("SSL_get_verify_result");
 extern fn CStr x509_verify_cert_error_string(CLong n) @cname("X509_verify_cert_error_string");
 extern fn CStr ssl_get_version(Ssl* s) @cname("SSL_get_version");
