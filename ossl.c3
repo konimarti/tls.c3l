@@ -16,7 +16,7 @@ struct X509Cert { char _opaque; }
 struct X509VerifyParam { char _opaque; }
 struct EvpMd { char _opaque; }
 
-// Values from the public OpenSSL 3 headers, from memory. verify each in M4 (runtime read-back).
+// Values from the public OpenSSL 3 headers, checked at runtime by the tests (read-back).
 const CInt SSL_ERROR_NONE = 0;
 const CInt SSL_ERROR_SSL = 1;
 const CInt SSL_ERROR_WANT_READ = 2;
@@ -66,7 +66,7 @@ extern fn CInt ssl_ctx_use_certificate_chain_file(SslCtx* ctx, CStr file) @cname
 extern fn CInt ssl_ctx_use_privatekey_file(SslCtx* ctx, CStr file, CInt type) @cname("SSL_CTX_use_PrivateKey_file");
 extern fn CInt ssl_ctx_check_private_key(SslCtx* ctx) @cname("SSL_CTX_check_private_key");
 // Non-NULL userdata is used by the default passphrase callback as the passphrase: an encrypted key then fails
-// instead of prompting on the terminal (F3). userdata must stay valid for the call: pass a static "" string.
+// instead of prompting on the terminal userdata must stay valid for the call: pass a static "" string.
 extern fn void ssl_ctx_set_default_passwd_cb_userdata(SslCtx* ctx, void* userdata) @cname("SSL_CTX_set_default_passwd_cb_userdata");
 extern fn void* ssl_ctx_get_default_passwd_cb_userdata(SslCtx* ctx) @cname("SSL_CTX_get_default_passwd_cb_userdata");
 extern fn void ssl_ctx_set_client_ca_list(SslCtx* ctx, void* list) @cname("SSL_CTX_set_client_CA_list");

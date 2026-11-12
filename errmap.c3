@@ -36,7 +36,7 @@ fn fault map_ssl_reason(ulong err, bool handshaking, char* out_alert = null)
 {
 	if (err == 0) return handshaking ? HANDSHAKE_FAILED : OPENSSL_ERROR;
 
-	// System error: call sites map specifically (F2); fallback is OPENSSL_ERROR.
+	// System error: call sites map specifically; fallback is OPENSSL_ERROR.
 	if (ossl::err_is_system(err)) return OPENSSL_ERROR;
 
 	CInt reason = ossl::err_reason(err);
@@ -108,7 +108,7 @@ fn fault map_ssl_error(CInt ssl_err, ossl::Ssl* s, bool handshaking, char* out_a
 	}
 }
 
-// Call site helpers for system/load errors (F2).
+// Call site helpers for system/load errors.
 fn fault map_ca_load_error(ulong err) => CA_LOAD_FAILED;
 fn fault map_cert_load_error(ulong err) => CERT_LOAD_FAILED;
 fn fault map_key_load_error(ulong err) => KEY_LOAD_FAILED;

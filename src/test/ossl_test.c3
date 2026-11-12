@@ -79,7 +79,7 @@ fn void test_04_memory_bio() @test
 	assert(read_bytes == 5);
 	assert(in == out);
 
-	// Empty read returns <= 0 and BIO_FLAGS_SHOULD_RETRY is set (N16)
+	// Empty read returns <= 0 and BIO_FLAGS_SHOULD_RETRY is set
 	char[1] empty_buf;
 	CInt empty_read = ossl::bio_read(b, &empty_buf, 1);
 	assert(empty_read <= 0);
