@@ -111,49 +111,49 @@ fn void test_weak_server_certificates_are_refused_when_loaded() @test
 
 // ---- host names ----
 
-fn void test_host_h1_exact_name() @test
+fn void test_host_exact_name() @test
 {
 	if (!loopback::pki_ready()) return;
 	expect_name_ok("server", "test.example");
 }
 
-fn void test_host_h2_case_is_ignored() @test
+fn void test_host_case_is_ignored() @test
 {
 	if (!loopback::pki_ready()) return;
 	expect_name_ok("server", "TEST.EXAMPLE");
 }
 
-fn void test_host_h3_wildcard_matches_one_label() @test
+fn void test_host_wildcard_matches_one_label() @test
 {
 	if (!loopback::pki_ready()) return;
 	expect_name_ok("wildcard", "a.test.example");
 }
 
-fn void test_host_h4_wildcard_does_not_span_labels() @test
+fn void test_host_wildcard_does_not_span_labels() @test
 {
 	if (!loopback::pki_ready()) return;
 	expect_name_mismatch("wildcard", "a.b.test.example", 62);
 }
 
-fn void test_host_h5_wildcard_does_not_match_the_parent() @test
+fn void test_host_wildcard_does_not_match_the_parent() @test
 {
 	if (!loopback::pki_ready()) return;
 	expect_name_mismatch("wildcard", "test.example", 62);
 }
 
-fn void test_host_h7_partial_wildcard_is_refused() @test
+fn void test_host_partial_wildcard_is_refused() @test
 {
 	if (!loopback::pki_ready()) return;
 	expect_name_mismatch("partial-wildcard", "foobar.test.example", 62);
 }
 
-fn void test_host_h8_dns_name_never_matches_an_address() @test
+fn void test_host_dns_name_never_matches_an_address() @test
 {
 	if (!loopback::pki_ready()) return;
 	expect_name_mismatch("dns-only", "127.0.0.1", 64);
 }
 
-fn void test_host_h9_ip_address_in_the_certificate() @test
+fn void test_host_ip_address_in_the_certificate() @test
 {
 	if (!loopback::pki_ready()) return;
 	expect_name_ok("ip-only", "127.0.0.1");
@@ -161,7 +161,7 @@ fn void test_host_h9_ip_address_in_the_certificate() @test
 	expect_name_mismatch("ip-only", "localhost", 62);
 }
 
-fn void test_host_h10_address_checked_as_a_name() @test
+fn void test_host_address_checked_as_a_name() @test
 {
 	if (!loopback::pki_ready()) return;
 	// an address string given to OpenSSL through the host name entry point; we never do that, this pins what it does
@@ -186,20 +186,20 @@ fn void test_host_h10_address_checked_as_a_name() @test
 	assert(c.verify_result() == 0);
 }
 
-fn void test_host_h11_common_name_alone_is_not_enough() @test
+fn void test_host_common_name_alone_is_not_enough() @test
 {
 	if (!loopback::pki_ready()) return;
 	expect_name_mismatch("cn-only", "test.example", 62);
 }
 
-fn void test_host_h12_common_name_is_ignored_when_names_exist() @test
+fn void test_host_common_name_is_ignored_when_names_exist() @test
 {
 	if (!loopback::pki_ready()) return;
 	expect_name_mismatch("cn-other", "other", 62);
 	expect_name_ok("cn-other", "test.example");
 }
 
-fn void test_host_h13_name_with_an_embedded_nul() @test
+fn void test_host_name_with_an_embedded_nul() @test
 {
 	if (!loopback::pki_ready()) return;
 	// the certificate names "evil.com\0.good.com": neither half may match
@@ -207,7 +207,7 @@ fn void test_host_h13_name_with_an_embedded_nul() @test
 	expect_name_mismatch("nul-san", "good.com", 62);
 }
 
-fn void test_host_h14_trailing_dot_is_ignored() @test
+fn void test_host_trailing_dot_is_ignored() @test
 {
 	if (!loopback::pki_ready()) return;
 	expect_name_ok("server", "test.example.");

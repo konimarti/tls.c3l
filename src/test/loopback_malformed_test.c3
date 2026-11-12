@@ -6,7 +6,7 @@ import tls::wire;
 import tls::wire_test;
 import tls::wire_hello_test;
 
-const String V7 = "16 03 01 00 54 01 00 00 50 03 03 00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f 10 11 12 13 14 15 16 17 18 19 1a 1b 1c 1d 1e 1f 00 00 02 c0 2b 01 00 00 25 00 00 00 0b 00 09 00 00 06 61 2e 74 65 73 74 00 0a 00 04 00 02 00 17 00 0d 00 04 00 02 04 03 00 0b 00 02 01 00";
+const String SAMPLE_HELLO = "16 03 01 00 54 01 00 00 50 03 03 00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f 10 11 12 13 14 15 16 17 18 19 1a 1b 1c 1d 1e 1f 00 00 02 c0 2b 01 00 00 25 00 00 00 0b 00 09 00 00 06 61 2e 74 65 73 74 00 0a 00 04 00 02 00 17 00 0d 00 04 00 02 04 03 00 0b 00 02 01 00";
 
 fn char[] hx(String s) => wire_test::hx(s);
 
@@ -42,7 +42,7 @@ fn void expect_rejected_with_alert(char[] bytes, char description)
 
 // ---- hand-made garbage ----
 
-fn void test_malformed_m1_http_request_on_a_tls_port() @test
+fn void test_malformed_http_request_on_a_tls_port() @test
 {
 	if (!loopback::pki_ready()) return;
 	Lone l;
@@ -52,19 +52,19 @@ fn void test_malformed_m1_http_request_on_a_tls_port() @test
 	assert(is_protocol_fault(f), "fault %s: %s", f, text(&l.conn));
 }
 
-fn void test_malformed_m2_unknown_content_type() @test
+fn void test_malformed_unknown_content_type() @test
 {
 	if (!loopback::pki_ready()) return;
 	expect_rejected_with_alert(hx("63 03 03 00 01 00"), 10);
 }
 
-fn void test_malformed_m3_record_longer_than_allowed() @test
+fn void test_malformed_record_longer_than_allowed() @test
 {
 	if (!loopback::pki_ready()) return;
 	expect_rejected_with_alert(hx("16 03 03 48 01 00 00 00 00 00 00 00 00 00 00"), 22);
 }
 
-fn void test_malformed_m5_record_version_two() @test
+fn void test_malformed_record_version_two() @test
 {
 	if (!loopback::pki_ready()) return;
 	Lone l;
@@ -77,10 +77,10 @@ fn void test_malformed_m5_record_version_two() @test
 	assert(@catch(l.conn.handshake()));
 }
 
-fn void test_malformed_m6_handshake_longer_than_its_record() @test
+fn void test_malformed_handshake_longer_than_its_record() @test
 {
 	if (!loopback::pki_ready()) return;
-	char[] hello = hx(V7);
+	char[] hello = hx(SAMPLE_HELLO);
 	hello[8] = 0x51;
 	Lone l;
 	l.open();
@@ -91,10 +91,10 @@ fn void test_malformed_m6_handshake_longer_than_its_record() @test
 	assert(@catch(l.conn.handshake()) == tls::TRUNCATED);
 }
 
-fn void test_malformed_m7_cut_off_client_hello() @test
+fn void test_malformed_cut_off_client_hello() @test
 {
 	if (!loopback::pki_ready()) return;
-	char[] hello = hx(V7);
+	char[] hello = hx(SAMPLE_HELLO);
 	Lone l;
 	l.open();
 	defer l.close();
@@ -104,7 +104,7 @@ fn void test_malformed_m7_cut_off_client_hello() @test
 	assert(@catch(l.conn.handshake()) == tls::TRUNCATED);
 }
 
-fn void test_malformed_m8_empty_handshake_record() @test
+fn void test_malformed_empty_handshake_record() @test
 {
 	if (!loopback::pki_ready()) return;
 	Lone l;
@@ -117,13 +117,13 @@ fn void test_malformed_m8_empty_handshake_record() @test
 	assert(@catch(l.conn.handshake()));
 }
 
-fn void test_malformed_m9_alert_of_one_byte() @test
+fn void test_malformed_alert_of_one_byte() @test
 {
 	if (!loopback::pki_ready()) return;
 	expect_rejected_with_alert(hx("15 03 03 00 01 01"), 10);
 }
 
-fn void test_malformed_m10_ssl2_framed_hello() @test
+fn void test_malformed_ssl2_framed_hello() @test
 {
 	if (!loopback::pki_ready()) return;
 	Lone l;
@@ -135,22 +135,22 @@ fn void test_malformed_m10_ssl2_framed_hello() @test
 	assert(@catch(l.conn.handshake()));
 }
 
-fn void test_malformed_m11_change_cipher_spec_first() @test
+fn void test_malformed_change_cipher_spec_first() @test
 {
 	if (!loopback::pki_ready()) return;
 	expect_rejected_with_alert(hx("14 03 03 00 01 01"), 10);
 }
 
-fn void test_malformed_m12_application_data_first() @test
+fn void test_malformed_application_data_first() @test
 {
 	if (!loopback::pki_ready()) return;
 	expect_rejected_with_alert(hx("17 03 03 00 01 ff"), 10);
 }
 
-fn void test_malformed_m13_client_hello_version_two() @test
+fn void test_malformed_client_hello_version_two() @test
 {
 	if (!loopback::pki_ready()) return;
-	char[] hello = hx(V7);
+	char[] hello = hx(SAMPLE_HELLO);
 	hello[9] = 0x02;
 	hello[10] = 0x00;
 	Lone l;
@@ -164,7 +164,7 @@ fn void test_malformed_m13_client_hello_version_two() @test
 	assert(alert[0] == 2 && alert[1] == 70, "alert %d %d", alert[0], alert[1]);
 }
 
-fn void test_malformed_m14_client_hello_far_too_short() @test
+fn void test_malformed_client_hello_far_too_short() @test
 {
 	if (!loopback::pki_ready()) return;
 	Lone l;
@@ -178,7 +178,7 @@ fn void test_malformed_m14_client_hello_far_too_short() @test
 	assert(alert[0] == 2 && alert[1] == 50, "alert %d %d", alert[0], alert[1]); // decode_error
 }
 
-fn void test_malformed_m18_oversized_record_length() @test
+fn void test_malformed_oversized_record_length() @test
 {
 	if (!loopback::pki_ready()) return;
 	Lone l;
@@ -198,7 +198,7 @@ fn void test_malformed_input_never_completes_a_handshake() @test
 {
 	if (!loopback::pki_ready()) return;
 	// every prefix-cut of a real hello, and every single-byte corruption of it, either waits or fails; none succeeds
-	char[] hello = hx(V7);
+	char[] hello = hx(SAMPLE_HELLO);
 	for (usz i = 0; i < hello.len; i++)
 	{
 		Lone l;
@@ -218,10 +218,10 @@ fn void test_malformed_input_never_completes_a_handshake() @test
 
 // ---- a real ClientHello as input ----
 
-fn void test_malformed_v7_hello_gets_a_server_hello() @test
+fn void test_malformed_hello_gets_a_server_hello() @test
 {
 	if (!loopback::pki_ready()) return;
-	char[] hello = hx(V7);
+	char[] hello = hx(SAMPLE_HELLO);
 	Lone l;
 	l.open();
 	defer l.close();
@@ -234,10 +234,10 @@ fn void test_malformed_v7_hello_gets_a_server_hello() @test
 	assert(out[9] == 0x03 && out[10] == 0x03);
 }
 
-fn void test_malformed_v7_hello_in_one_byte_slices() @test
+fn void test_malformed_hello_in_one_byte_slices() @test
 {
 	if (!loopback::pki_ready()) return;
-	char[] hello = hx(V7);
+	char[] hello = hx(SAMPLE_HELLO);
 	Lone bulk;
 	bulk.open();
 	defer bulk.close();
@@ -271,7 +271,7 @@ fn void test_malformed_v7_hello_in_one_byte_slices() @test
 	assert(a >= want.len - 8 && b >= got.len - 8);
 }
 
-fn void test_malformed_v6_compatibility_change_cipher_spec() @test
+fn void test_malformed_compatibility_change_cipher_spec() @test
 {
 	if (!loopback::pki_ready()) return;
 	// a real TLS 1.3 client sends a change_cipher_spec record right after its hello (middlebox compatibility)

@@ -102,7 +102,7 @@ fn void check_alert_record(String record, char level, char description)
 	assert(a.description == description);
 }
 
-fn void test_wire_alert_v1_to_v5() @test
+fn void test_wire_alert_to() @test
 {
 	check_alert_record("15 03 03 00 02 01 00", 1, 0);     // close_notify, warning
 	check_alert_record("15 03 03 00 02 02 28", 2, 40);    // handshake_failure
@@ -165,7 +165,7 @@ fn void test_wire_alpn_b2() @test
 {
 	char[] out = wire::encode_alpn({ "h2", "http/1.1" }, tmem)!!;
 	assert(out == hx("02 68 32 08 68 74 74 70 2f 31 2e 31"));
-	// the list inside the extension (V8): ext type 16, ext len 14, list len 12, then the names
+	// the list inside the extension (ALPN): ext type 16, ext len 14, list len 12, then the names
 	assert(out.len == 12);
 }
 

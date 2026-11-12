@@ -3,7 +3,7 @@ module tls::wire_hello_test;
 import tls::wire;
 import tls::wire_test;
 
-const String V7_HEX = "16 03 01 00 54 01 00 00 50 03 03 00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f 10 11 12 13 14 15 16 17 18 19 1a 1b 1c 1d 1e 1f 00 00 02 c0 2b 01 00 00 25 00 00 00 0b 00 09 00 00 06 61 2e 74 65 73 74 00 0a 00 04 00 02 00 17 00 0d 00 04 00 02 04 03 00 0b 00 02 01 00";
+const String SAMPLE_HELLO_HEX = "16 03 01 00 54 01 00 00 50 03 03 00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f 10 11 12 13 14 15 16 17 18 19 1a 1b 1c 1d 1e 1f 00 00 02 c0 2b 01 00 00 25 00 00 00 0b 00 09 00 00 06 61 2e 74 65 73 74 00 0a 00 04 00 02 00 17 00 0d 00 04 00 02 04 03 00 0b 00 02 01 00";
 
 // Byte builder for hellos made from fields.
 struct Buf
@@ -65,12 +65,12 @@ fn char[] cat(char[] a, char[] b)
 
 fn char[] hx(String s) => wire_test::hx(s);
 
-fn void test_hello_v7_golden() @test
+fn void test_hello_golden() @test
 {
 	TrackingAllocator ta;
 	ta.init(mem);
 	defer ta.free();
-	ClientHelloInfo info = wire::parse_client_hello(hx(V7_HEX), &ta)!!;
+	ClientHelloInfo info = wire::parse_client_hello(hx(SAMPLE_HELLO_HEX), &ta)!!;
 	assert(info.legacy_version == 0x0303);
 	assert(info.server_name == "a.test");
 	assert(info.cipher_suites == (ushort[]){ 0xc02b });
@@ -81,14 +81,14 @@ fn void test_hello_v7_golden() @test
 	assert(!ta.has_leaks());
 }
 
-fn void test_hello_v7_fixture_file() @test
+fn void test_hello_fixture_file() @test
 {
 	// the same bytes as the checked-in fixture file
 	String file = (String)$embed("fixtures/clienthello_v7.hex");
-	assert(hx(file.trim()) == hx(V7_HEX));
+	assert(hx(file.trim()) == hx(SAMPLE_HELLO_HEX));
 }
 
-fn void test_hello_v7_built() @test
+fn void test_hello_built() @test
 {
 	Buf e = buf_new();
 	// server_name a.test, supported_groups, signature_algorithms, ec_point_formats: as in the golden bytes
@@ -97,14 +97,14 @@ fn void test_hello_v7_built() @test
 	e.raw(ext(13, hx("00 02 04 03")));
 	e.raw(ext(11, hx("01 00")));
 	char[] built = build_hello(0x0303, { 0xc02b }, e.bytes(), true);
-	assert(built == hx(V7_HEX));
+	assert(built == hx(SAMPLE_HELLO_HEX));
 	ClientHelloInfo info = wire::parse_client_hello(built, tmem)!!;
 	assert(info.server_name == "a.test");
 }
 
 fn void test_hello_extension_vectors() @test
 {
-	// V9: SNI extension for example.com, V8: ALPN h2,http/1.1, V10: supported_versions
+	// SNI extension for example.com, ALPN h2 and http/1.1, supported_versions 1.3 and 1.2
 	Buf e = buf_new();
 	e.raw(hx("00 00 00 10 00 0e 00 00 0b 65 78 61 6d 70 6c 65 2e 63 6f 6d"));
 	e.raw(hx("00 10 00 0e 00 0c 02 68 32 08 68 74 74 70 2f 31 2e 31"));
@@ -169,22 +169,22 @@ fn void test_hello_zero_length_sni_list() @test
 	assert(info.server_name.len == 0);
 }
 
-fn void test_hello_m6_lying_length() @test
+fn void test_hello_lying_length() @test
 {
-	// V7 with the handshake length claiming one byte more than the record carries
-	char[] bad = hx(V7_HEX);
+	// The sample hello with the handshake length claiming one byte more than the record carries
+	char[] bad = hx(SAMPLE_HELLO_HEX);
 	bad[8] = 0x51;
 	assert(@catch(wire::parse_client_hello(bad, tmem)) == wire::BAD_HANDSHAKE);
 }
 
-fn void test_hello_m14_too_short() @test
+fn void test_hello_too_short() @test
 {
 	assert(@catch(wire::parse_client_hello(hx("16 03 03 00 05 01 00 00 01 00"), tmem)) == wire::BAD_HANDSHAKE);
 }
 
 fn void test_hello_truncated() @test
 {
-	char[] v7 = hx(V7_HEX);
+	char[] v7 = hx(SAMPLE_HELLO_HEX);
 	for (usz n = 0; n < v7.len; n++)
 	{
 		assert(@catch(wire::parse_client_hello(v7[:n], tmem)) == wire::SHORT_INPUT);
@@ -193,7 +193,7 @@ fn void test_hello_truncated() @test
 
 fn void test_hello_trailing_bytes_after_record_ignored() @test
 {
-	char[] more = cat(hx(V7_HEX), hx("17 03 03 00 01 ff"));
+	char[] more = cat(hx(SAMPLE_HELLO_HEX), hx("17 03 03 00 01 ff"));
 	ClientHelloInfo info = wire::parse_client_hello(more, tmem)!!;
 	assert(info.server_name == "a.test");
 }
@@ -207,8 +207,8 @@ fn void test_hello_lying_extension_length() @test
 
 fn void test_hello_extension_block_length_mismatch() @test
 {
-	// V7 with the extension block length one too large
-	char[] v7 = hx(V7_HEX);
+	// The sample hello with the extension block length one too large
+	char[] v7 = hx(SAMPLE_HELLO_HEX);
 	usz at = v7.len - 37 - 2;
 	assert(v7[at] == 0 && v7[at + 1] == 0x25);
 	v7[at + 1] = 0x26;
@@ -217,10 +217,10 @@ fn void test_hello_extension_block_length_mismatch() @test
 
 fn void test_hello_wrong_record_or_message_type() @test
 {
-	char[] app = hx(V7_HEX);
+	char[] app = hx(SAMPLE_HELLO_HEX);
 	app[0] = 23;
 	assert(@catch(wire::parse_client_hello(app, tmem)) == wire::BAD_HANDSHAKE);
-	char[] sh = hx(V7_HEX);
+	char[] sh = hx(SAMPLE_HELLO_HEX);
 	sh[5] = 2; // server_hello
 	assert(@catch(wire::parse_client_hello(sh, tmem)) == wire::BAD_HANDSHAKE);
 }
