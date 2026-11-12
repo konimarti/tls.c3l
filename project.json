@@ -2,5 +2,10 @@
 	"authors": [ "Koni Marti <koni.marti@gmail.com>" ],
 	"version": "0.1.0",
 	"output": "build",
-	"sources": [ "./*", "src/test/**" ]
+	"sources": [ "./*", "src/test/**" ],
+	"targets": {
+		"tls": {
+			"type": "static-lib"
+		}
+	}
 }
