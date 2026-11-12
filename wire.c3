@@ -225,6 +225,7 @@ fn ClientHelloInfo? parse_client_hello(char[] record, Allocator allocator)
 	info.cipher_suites = read_u16_list(allocator, &r, r.u16()!)!;
 	r.take(r.u8()!)!;                           // legacy_compression_methods
 	if (r.remaining() == 0) return info;        // no extensions (allowed by the grammar)
+	bool seen_sni, seen_groups, seen_versions, seen_alpn;
 
 	usz ext_total = r.u16()!;
 	if (ext_total != r.remaining()) return BAD_HANDSHAKE~;
@@ -235,28 +236,36 @@ fn ClientHelloInfo? parse_client_hello(char[] record, Allocator allocator)
 		switch (ext_type)
 		{
 			case EXT_SERVER_NAME:
-				if (ext.remaining() == 0) return BAD_HANDSHAKE~;
+				if (seen_sni || ext.remaining() == 0) return BAD_HANDSHAKE~;
+				seen_sni = true;
 				Reader list = { .data = ext.take(ext.u16()!)! };
 				if (ext.remaining() != 0) return BAD_HANDSHAKE~;
+				bool seen_host_name = false;
 				while (list.remaining() > 0)
 				{
 					char name_type = list.u8()!;
 					char[] name = list.take(list.u16()!)!;
-					if (name_type == 0 && info.server_name.len == 0)
+					if (name_type == 0)
 					{
+						// at most one name of each type in the list
+						if (info.server_name.len > 0 || seen_host_name) return BAD_HANDSHAKE~;
+						seen_host_name = true;
 						info.server_name = dup_bytes(allocator, name)!;
 					}
 				}
 			case EXT_SUPPORTED_GROUPS:
-				if (info.supported_groups.len > 0) return BAD_HANDSHAKE~;
+				if (seen_groups) return BAD_HANDSHAKE~;
+				seen_groups = true;
 				info.supported_groups = read_u16_list(allocator, &ext, ext.u16()!)!;
 				if (ext.remaining() != 0) return BAD_HANDSHAKE~;
 			case EXT_SUPPORTED_VERSIONS:
-				if (info.supported_versions.len > 0) return BAD_HANDSHAKE~;
+				if (seen_versions) return BAD_HANDSHAKE~;
+				seen_versions = true;
 				info.supported_versions = read_u16_list(allocator, &ext, ext.u8()!)!;
 				if (ext.remaining() != 0) return BAD_HANDSHAKE~;
 			case EXT_ALPN:
-				if (info.alpn.len > 0) return BAD_HANDSHAKE~;
+				if (seen_alpn) return BAD_HANDSHAKE~;
+				seen_alpn = true;
 				Reader list = { .data = ext.take(ext.u16()!)! };
 				if (ext.remaining() != 0) return BAD_HANDSHAKE~;
 				usz count = 0;

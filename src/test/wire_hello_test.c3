@@ -268,3 +268,37 @@ fn void test_hello_malformed_fields_release_memory() @test
 
 	assert(!ta.has_leaks());
 }
+
+fn void test_hello_duplicate_extensions_rejected() @test
+{
+	TrackingAllocator ta;
+	ta.init(mem);
+	defer ta.free();
+	char[] sni_a = ext(0, hx("00 09 00 00 06 61 2e 74 65 73 74"));
+	char[] sni_b = ext(0, hx("00 09 00 00 06 62 2e 74 65 73 74"));
+	char[] groups = ext(10, hx("00 02 00 17"));
+	char[] groups_empty = ext(10, hx("00 00"));
+	char[] versions = ext(43, hx("02 03 04"));
+	char[] versions_empty = ext(43, hx("00"));
+	char[] alpn = ext(16, hx("00 03 02 68 32"));
+
+	assert(@catch(wire::parse_client_hello(build_hello(0x0303, { 0x1301 }, cat(sni_a, sni_b), true), &ta)) == wire::BAD_HANDSHAKE);
+	assert(@catch(wire::parse_client_hello(build_hello(0x0303, { 0x1301 }, cat(groups, groups), true), &ta)) == wire::BAD_HANDSHAKE);
+	// an empty first extension must not let a second one through
+	assert(@catch(wire::parse_client_hello(build_hello(0x0303, { 0x1301 }, cat(groups_empty, groups), true), &ta)) == wire::BAD_HANDSHAKE);
+	assert(@catch(wire::parse_client_hello(build_hello(0x0303, { 0x1301 }, cat(versions, versions), true), &ta)) == wire::BAD_HANDSHAKE);
+	assert(@catch(wire::parse_client_hello(build_hello(0x0303, { 0x1301 }, cat(versions_empty, versions), true), &ta)) == wire::BAD_HANDSHAKE);
+	assert(@catch(wire::parse_client_hello(build_hello(0x0303, { 0x1301 }, cat(alpn, alpn), true), &ta)) == wire::BAD_HANDSHAKE);
+	assert(!ta.has_leaks());
+}
+
+fn void test_hello_two_host_names_in_one_list_rejected() @test
+{
+	// one server_name extension whose list holds two host_name entries
+	char[] list = hx("00 12 00 00 06 61 2e 74 65 73 74 00 00 06 62 2e 74 65 73 74");
+	assert(@catch(wire::parse_client_hello(build_hello(0x0303, { 0x1301 }, ext(0, list), true), tmem)) == wire::BAD_HANDSHAKE);
+	// a host_name next to an entry of another name type is fine, the other type is skipped
+	char[] mixed = hx("00 0d 01 00 01 aa 00 00 06 61 2e 74 65 73 74");
+	ClientHelloInfo info = wire::parse_client_hello(build_hello(0x0303, { 0x1301 }, ext(0, mixed), true), tmem)!!;
+	assert(info.server_name == "a.test");
+}
