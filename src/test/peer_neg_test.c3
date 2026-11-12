@@ -105,40 +105,48 @@ fn ClientConfig trusting_the_test_ca()
 	return { .ca_file = peer_support::ca_file() };
 }
 
-// The messages the peer has printed that mention an alert (the peers of the negative scenarios run with -msg).
-fn usz alerts_seen(String scenario)
+// Alerts the peer RECEIVED from our client with the given description, e.g. "fatal certificate_expired". The peers of
+// the negative scenarios run with -msg, which marks messages they receive with "<<<" and the ones they send with ">>>";
+// only the former count, so neither the alerts a peer sends itself nor the noise of the harness's readiness probe do.
+fn usz alerts_from_client(String scenario, String description)
 {
 	String path = peer_support::state_value("OUT").tconcat("/").tconcat(scenario).tconcat(".log");
 	if (!file::is_file(path)) return 0;
 	String text = (String)file::load_temp(path)!!;
 	usz count = 0;
-	foreach (part : text.tsplit("Alert")) count++;
-	return count - 1;
+	foreach (line : text.tsplit("\n"))
+	{
+		if (line.starts_with("<<<") && line.contains("Alert") && line.contains(description)) count++;
+	}
+	return count;
 }
 
-// The handshake against `scenario` must fail with `want` and the engine must report `code` as the verification result.
-fn void expect_failure(String scenario, String name, fault want, long code)
+// The peer prints its messages a moment after receiving them.
+fn bool wait_for_client_alert(String scenario, String description, usz before)
 {
-	usz alerts = alerts_seen(scenario);
+	for (int i = 0; i < 40; i++)
+	{
+		if (alerts_from_client(scenario, description) > before) return true;
+		thread::sleep_ms(50)!!;
+	}
+	return false;
+}
+
+// The handshake against `scenario` must fail with `want`, the engine must report `code` as the verification result, and
+// the peer must have received exactly the alert `alert` from us (not just any alert, and not its own).
+//
+// The peers are `openssl s_server`, which serves ONE connection at a time: a test must close its connection before
+// it opens the next one to the same peer, or the second waits until its timeout.
+fn void expect_failure(String scenario, String name, fault want, long code, String alert)
+{
+	usz before = alerts_from_client(scenario, alert);
 	Probe p;
 	defer p.release();
 	p.start(scenario, trusting_the_test_ca(), name);
 	assert(!p.done, "the handshake with %s succeeded", scenario);
 	assert(p.result == want, "%s: fault %s, wanted %s", scenario, p.result, want);
 	assert(p.conn.verify_result() == code, "%s: verify result %d, wanted %d", scenario, p.conn.verify_result(), code);
-	// the failure ended with an alert to the peer, not with silence
-	assert(wait_for_alert(scenario, alerts), "%s: the peer saw no alert", scenario);
-}
-
-// The peer prints its messages a moment after receiving them.
-fn bool wait_for_alert(String scenario, usz before)
-{
-	for (int i = 0; i < 40; i++)
-	{
-		if (alerts_seen(scenario) > before) return true;
-		thread::sleep_ms(50)!!;
-	}
-	return false;
+	assert(wait_for_client_alert(scenario, alert, before), "%s: the peer did not receive %s from us", scenario, alert);
 }
 
 // ---- certificate problems seen by a real server ----
@@ -146,19 +154,19 @@ fn bool wait_for_alert(String scenario, usz before)
 fn void test_peer_neg_expired_certificate() @test
 {
 	if (!peer_support::peers_ready()) return;
-	expect_failure("expired", "localhost", tls::CERT_EXPIRED, 10);
+	expect_failure("expired", "localhost", tls::CERT_EXPIRED, 10, "fatal certificate_expired");
 }
 
 fn void test_peer_neg_certificate_not_yet_valid() @test
 {
 	if (!peer_support::peers_ready()) return;
-	expect_failure("notyet", "localhost", tls::CERT_NOT_YET_VALID, 9);
+	expect_failure("notyet", "localhost", tls::CERT_NOT_YET_VALID, 9, "fatal bad_certificate");
 }
 
 fn void test_peer_neg_wrong_host_name() @test
 {
 	if (!peer_support::peers_ready()) return;
-	expect_failure("wronghost", "localhost", tls::HOSTNAME_MISMATCH, 62);
+	expect_failure("wronghost", "localhost", tls::HOSTNAME_MISMATCH, 62, "fatal bad_certificate");
 }
 
 fn void test_peer_neg_wrong_host_name_passes_without_the_name_check() @test
@@ -176,37 +184,37 @@ fn void test_peer_neg_wrong_host_name_passes_without_the_name_check() @test
 fn void test_peer_neg_issuer_not_trusted() @test
 {
 	if (!peer_support::peers_ready()) return;
-	expect_failure("untrusted", "localhost", tls::CERT_UNTRUSTED, 20);
+	expect_failure("untrusted", "localhost", tls::CERT_UNTRUSTED, 20, "fatal unknown_ca");
 }
 
 fn void test_peer_neg_self_signed_certificate() @test
 {
 	if (!peer_support::peers_ready()) return;
-	expect_failure("selfsigned", "localhost", tls::CERT_SELF_SIGNED, 18);
+	expect_failure("selfsigned", "localhost", tls::CERT_SELF_SIGNED, 18, "fatal unknown_ca");
 }
 
 fn void test_peer_neg_certificate_for_another_purpose() @test
 {
 	if (!peer_support::peers_ready()) return;
-	expect_failure("noeku", "localhost", tls::CERT_INVALID, 26);
+	expect_failure("noeku", "localhost", tls::CERT_INVALID, 26, "fatal unsupported_certificate");
 }
 
 fn void test_peer_neg_intermediate_that_is_not_a_ca() @test
 {
 	if (!peer_support::peers_ready()) return;
-	expect_failure("badint", "localhost", tls::CERT_INVALID, 79);
+	expect_failure("badint", "localhost", tls::CERT_INVALID, 79, "fatal unknown_ca");
 }
 
 fn void test_peer_neg_common_name_alone_is_not_enough() @test
 {
 	if (!peer_support::peers_ready()) return;
-	expect_failure("cnonly", "test.example", tls::HOSTNAME_MISMATCH, 62);
+	expect_failure("cnonly", "test.example", tls::HOSTNAME_MISMATCH, 62, "fatal bad_certificate");
 }
 
 fn void test_peer_neg_dns_name_in_the_certificate_for_an_address() @test
 {
 	if (!peer_support::peers_ready()) return;
-	expect_failure("dnsonly", "127.0.0.1", tls::HOSTNAME_MISMATCH, 64);
+	expect_failure("dnsonly", "127.0.0.1", tls::HOSTNAME_MISMATCH, 64, "fatal bad_certificate");
 }
 
 fn void test_peer_neg_wildcard_matches_one_label_only() @test
@@ -218,8 +226,8 @@ fn void test_peer_neg_wildcard_matches_one_label_only() @test
 		p.start("wildcard", trusting_the_test_ca(), "a.test.example");
 		assert(p.done);
 	}
-	expect_failure("wildcard", "a.b.test.example", tls::HOSTNAME_MISMATCH, 62);
-	expect_failure("wildcard", "test.example", tls::HOSTNAME_MISMATCH, 62);
+	expect_failure("wildcard", "a.b.test.example", tls::HOSTNAME_MISMATCH, 62, "fatal bad_certificate");
+	expect_failure("wildcard", "test.example", tls::HOSTNAME_MISMATCH, 62, "fatal bad_certificate");
 }
 
 fn void test_peer_neg_insecure_mode_accepts_an_expired_certificate() @test
@@ -238,13 +246,13 @@ fn void test_peer_neg_insecure_mode_accepts_an_expired_certificate() @test
 fn void test_peer_neg_server_that_only_speaks_tls11() @test
 {
 	if (!peer_support::peers_ready()) return;
-	usz alerts = alerts_seen("tls11");
 	Probe p;
 	defer p.release();
 	p.start("tls11", trusting_the_test_ca(), "localhost");
 	assert(!p.done);
 	assert(p.result == tls::PROTOCOL_VERSION, "fault %s", p.result);
-	assert(wait_for_alert("tls11", alerts));
+	// the server said so itself: protocol_version (70)
+	assert(p.conn.last_alert == 70, "alert %d", p.conn.last_alert);
 }
 
 // ---- client certificates ----
@@ -294,20 +302,17 @@ fn void test_peer_neg_missing_client_certificate_tls12() @test
 fn void test_peer_neg_weak_rsa_key_and_sha1_signature() @test
 {
 	if (!peer_support::peers_ready()) return;
-	String[2] scenarios = { "weakkey", "sha1sig" };
-	foreach (scenario : scenarios)
-	{
-		Probe p;
-		defer p.release();
-		p.start(scenario, trusting_the_test_ca(), "localhost");
-		assert(!p.done, "%s: handshake succeeded", scenario);
-		assert(p.result == tls::CERT_INVALID, "%s: fault %s, verify result %d", scenario, p.result, p.conn.verify_result());
-	}
+	// 66: EE key too small, 68: CA signature digest too weak (observed on OpenSSL 3.5.5)
+	expect_failure("weakkey", "localhost", tls::CERT_INVALID, 66, "fatal bad_certificate");
+	expect_failure("sha1sig", "localhost", tls::CERT_INVALID, 68, "fatal bad_certificate");
 }
 
 // ---- nothing bad gets through ----
 
-fn void test_peer_neg_default_settings_never_accept_a_bad_peer() @test
+// Only a smoke test: the default settings trust the system store, which does not hold the test CA, so every peer here
+// fails with an unknown issuer whatever else is wrong with it. The checks themselves (expiry, name, purpose, key
+// strength) are covered by the tests above, which trust the test CA.
+fn void test_peer_neg_system_store_alone_refuses_every_test_peer() @test
 {
 	if (!peer_support::peers_ready()) return;
 	String[14] bad = { "expired", "notyet", "wronghost", "untrusted", "selfsigned", "noeku", "badint", "cnonly",
