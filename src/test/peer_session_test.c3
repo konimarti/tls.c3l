@@ -423,3 +423,21 @@ fn void test_peer_session_tls13_resumption_checks_the_pin_too() @test
 	assert(!r.done);
 	assert(r.result == tls::PIN_MISMATCH, "fault %s", r.result);
 }
+
+fn void test_peer_session_cannot_be_offered_once_the_handshake_started() @test
+{
+	if (!peer_support::peers_ready()) return;
+	char[] blob = first_session("resume13");
+	defer
+	{
+		tls::wipe_session(blob);
+		free(blob);
+	}
+	Context ctx = tls::new_client_context(&&cached())!!;
+	defer ctx.free();
+	Conn c = ctx.new_client_conn("localhost")!!;
+	defer c.free();
+	assert(!c.handshake()!!); // the hello is out
+	// a valid blob, but too late: it would have no effect, and saying so is better than silently ignoring it
+	assert(@catch(c.import_session(blob)) == tls::CONFIG_INVALID);
+}

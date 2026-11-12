@@ -253,6 +253,7 @@ struct Conn
 	bool pin_checked;            // the configured pin has been compared with the peer certificate
 	char[32] name_hash;          // binds sessions to the name and the verification settings (see session_binding)
 	bool has_name;               // a name was given; sessions need one
+	bool handshake_started;
 	bool failed;                 // sticky: every later call returns the stored fault
 	fault failure;
 	char last_alert;             // code of the last received fatal alert, 0 = none
@@ -378,6 +379,7 @@ fn bool? Conn.handshake(&self)
 	if (self.failed) return self.failure~;
 	if (self.handshake_done) return true;
 	if (self.close_notify_sent) return CLOSED~; // closed before the handshake finished: do not start one
+	self.handshake_started = true;
 	ossl::err_clear_error();
 	CInt r = ossl::ssl_do_handshake(self.ssl);
 	// The pin is compared as soon as the peer's certificate is known, which can be before the handshake is over:
@@ -620,7 +622,7 @@ fn char[]? Conn.export_session(&self, Allocator allocator = mem)
 // check session_reused() afterwards if that matters.
 fn void? Conn.import_session(&self, char[] blob)
 {
-	if (!self.ctx.session_cache || self.server || !self.has_name || self.handshake_done) return CONFIG_INVALID~;
+	if (!self.ctx.session_cache || self.server || !self.has_name || self.handshake_started) return CONFIG_INVALID~;
 	if (blob.len <= 32) return SESSION_INVALID~;
 	// bound to the name: a session from another server must not silently turn into a handshake in another context
 	if (ossl::crypto_memcmp(blob.ptr, &self.name_hash, 32) != 0) return SESSION_INVALID~;
