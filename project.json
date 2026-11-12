@@ -1,12 +1,26 @@
 {
-	"authors": [ "Koni Marti <koni.marti@gmail.com>" ],
+	"authors": [
+		"Koni Marti <koni.marti@gmail.com>"
+	],
 	"version": "0.1.0",
 	"output": "build",
-	"sources": [ "./*", "src/test/**" ],
-	"link-args": [ "-l:libssl.so.3", "-l:libcrypto.so.3" ],
+	"sources": [
+		"./*",
+		"src/test/**"
+	],
+	"link-args": [
+		"-l:libssl.so.3",
+		"-l:libcrypto.so.3"
+	],
 	"targets": {
 		"tls": {
 			"type": "static-lib"
+		},
+		"tlsc": {
+			"type": "executable",
+			"sources": [
+				"src/tlsc/**"
+			]
 		}
 	}
 }
