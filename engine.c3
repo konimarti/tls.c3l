@@ -325,6 +325,10 @@ fn bool? Conn.handshake(&self)
 			char[32] digest;
 			if (!self.peer_digest(&digest) || ossl::crypto_memcmp(digest[..].ptr, self.ctx.pin_sha256.ptr, 32) != 0)
 			{
+				// OpenSSL has already queued our last flight (Finished, and the client certificate with mutual TLS): the
+				// peer must not receive any of it, since it is not the one we pinned
+				char[512] discard;
+				while (self.out_pending() > 0 && self.take_out(&discard) > 0) {}
 				return self.fail(PIN_MISMATCH)~;
 			}
 		}

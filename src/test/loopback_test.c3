@@ -562,3 +562,42 @@ fn void test_loopback_peer_without_a_certificate_has_no_fingerprint() @test
 	defer c.free();
 	assert(@catch(c.peer_cert_sha256()) == tls::NO_PEER_CERT);
 }
+
+fn void check_pin_mismatch_sends_nothing(bool tls12)
+{
+	ClientConfig cc = { .verify = PINNED_ONLY };
+	char[32] wrong;
+	wrong[..] = 0x77;
+	cc.pin_sha256 = wrong[..];
+	cc.client_cert_file = loopback::pki("client.pem");
+	cc.client_key_file = loopback::pki("client.key");
+	if (tls12) cc.max_version = TLS_1_2;
+	ServerConfig sc = loopback::server_cfg("selfsigned");
+	sc.client_ca_file = loopback::pki("ca.pem");
+	Pair p;
+	p.open(cc, sc, "localhost");
+	defer p.close();
+	assert(p.outcome.client_fault == tls::PIN_MISMATCH);
+	// nothing of the final flight is left to be sent to the unpinned peer
+	assert(p.c.out_pending() == 0);
+	if (!tls12)
+	{
+		// TLS 1.3: the client certificate travels in that final flight, so the server never gets it and never completes.
+		// TLS 1.2 sends the certificate before the server's Finished arrives, i.e. before the pin can be compared; that
+		// disclosure is a documented limit, and only the flight after the check is withheld.
+		assert(!p.outcome.server_done);
+		assert(@catch(p.s.peer_cert_sha256()) == tls::NO_PEER_CERT);
+	}
+}
+
+fn void test_loopback_pin_mismatch_sends_nothing_tls13() @test
+{
+	if (!loopback::pki_ready()) return;
+	check_pin_mismatch_sends_nothing(false);
+}
+
+fn void test_loopback_pin_mismatch_sends_nothing_tls12() @test
+{
+	if (!loopback::pki_ready()) return;
+	check_pin_mismatch_sends_nothing(true);
+}
