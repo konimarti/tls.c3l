@@ -1,0 +1,305 @@
+// OpenSSL-specific engine on memory BIOs. A pure-C3 backend provides the same Context/Conn API in its own file.
+module tls;
+import tls::ossl;
+import tls::wire;
+
+// Used as the passphrase of every private key: a non-NULL value stops OpenSSL's default callback from asking on the
+// terminal, so an encrypted key fails to load instead of blocking.
+const char[1] NO_PASSPHRASE = { 0 };
+
+struct Context
+{
+	ossl::SslCtx* handle;
+	bool server;
+	VerifyMode verify;
+	char[] pin_sha256;           // copy of the configured pin (owned), empty = none
+	bool require_alpn;
+	bool has_alpn;
+	bool session_cache;
+	bool system_roots_loaded;    // whether the system trust store was added
+	Allocator allocator;
+}
+
+// Clears the OpenSSL error queue and returns the fault, so one failed call never poisons the next one.
+fn fault ossl_fail(fault f)
+{
+	ossl::err_clear_error();
+	return f;
+}
+
+// SSL_CTX is created once and shared by many connections; free it after all of them.
+fn Context? new_client_context(ClientConfig* cfg, Allocator allocator = mem)
+{
+	cfg.validate()!;
+	ossl::init()!;
+	defer ossl::err_clear_error();
+
+	ossl::SslCtx* ctx = ossl::ssl_ctx_new(ossl::tls_client_method());
+	if (!ctx) return ossl_fail(OPENSSL_ERROR)~;
+	defer catch ossl::ssl_ctx_free(ctx);
+
+	if (ossl::ctx_set_min_proto(ctx, cfg.min_wire()) != 1) return ossl_fail(OPENSSL_ERROR)~;
+	if (ossl::ctx_set_max_proto(ctx, cfg.max_wire()) != 1) return ossl_fail(OPENSSL_ERROR)~;
+	ossl::ssl_ctx_set_options(ctx, ossl::SSL_OP_NO_COMPRESSION | ossl::SSL_OP_NO_RENEGOTIATION);
+
+	bool verifies_chain = cfg.verify == FULL || cfg.verify == CHAIN_ONLY;
+	ossl::ssl_ctx_set_verify(ctx, verifies_chain ? ossl::SSL_VERIFY_PEER : ossl::SSL_VERIFY_NONE, null);
+	ossl::ssl_ctx_set_verify_depth(ctx, cfg.max_chain_depth > 0 ? cfg.max_chain_depth : DEFAULT_CHAIN_DEPTH);
+
+	// Trust: a configured CA replaces the system store unless also_system_roots asks for both.
+	bool system_roots = false;
+	if (verifies_chain)
+	{
+		bool custom = cfg.ca_file.len > 0 || cfg.ca_dir.len > 0;
+		if (cfg.ca_file.len > 0 && ossl::ssl_ctx_load_verify_file(ctx, (char*)cfg.ca_file.zstr_tcopy()) != 1)
+		{
+			return ossl_fail(CA_LOAD_FAILED)~;
+		}
+		if (cfg.ca_dir.len > 0 && ossl::ssl_ctx_load_verify_dir(ctx, (char*)cfg.ca_dir.zstr_tcopy()) != 1)
+		{
+			return ossl_fail(CA_LOAD_FAILED)~;
+		}
+		if (!custom || cfg.also_system_roots)
+		{
+			if (ossl::ssl_ctx_set_default_verify_paths(ctx) != 1) return ossl_fail(CA_LOAD_FAILED)~;
+			system_roots = true;
+		}
+	}
+
+	// Before any key is loaded, so that an encrypted key can never prompt.
+	ossl::ssl_ctx_set_default_passwd_cb_userdata(ctx, &NO_PASSPHRASE);
+	if (cfg.client_cert_file.len > 0)
+	{
+		if (ossl::ssl_ctx_use_certificate_chain_file(ctx, (char*)cfg.client_cert_file.zstr_tcopy()) != 1)
+		{
+			return ossl_fail(CERT_LOAD_FAILED)~;
+		}
+		if (ossl::ssl_ctx_use_privatekey_file(ctx, (char*)cfg.client_key_file.zstr_tcopy(), ossl::SSL_FILETYPE_PEM) != 1)
+		{
+			return ossl_fail(KEY_LOAD_FAILED)~;
+		}
+		if (ossl::ssl_ctx_check_private_key(ctx) != 1) return ossl_fail(KEY_LOAD_FAILED)~;
+	}
+
+	char[] alpn = wire::encode_alpn(cfg.alpn, tmem)!;
+	if (alpn.len > 0)
+	{
+		// 0 means success for this one call
+		if (ossl::ssl_ctx_set_alpn_protos(ctx, alpn.ptr, (CUInt)alpn.len) != 0) return ossl_fail(OPENSSL_ERROR)~;
+	}
+	if (cfg.cipher_list.len > 0 && ossl::ssl_ctx_set_cipher_list(ctx, (char*)cfg.cipher_list.zstr_tcopy()) != 1)
+	{
+		return ossl_fail(CONFIG_INVALID)~;
+	}
+	if (cfg.ciphersuites.len > 0 && ossl::ssl_ctx_set_ciphersuites(ctx, (char*)cfg.ciphersuites.zstr_tcopy()) != 1)
+	{
+		return ossl_fail(CONFIG_INVALID)~;
+	}
+	if (cfg.groups.len > 0 && ossl::ctx_set_groups(ctx, (char*)cfg.groups.zstr_tcopy()) != 1)
+	{
+		return ossl_fail(CONFIG_INVALID)~;
+	}
+
+	Context c = {
+		.handle = ctx,
+		.verify = cfg.verify,
+		.require_alpn = cfg.require_alpn,
+		.has_alpn = alpn.len > 0,
+		.session_cache = cfg.session_cache,
+		.system_roots_loaded = system_roots,
+		.allocator = allocator,
+	};
+	if (cfg.pin_sha256.len > 0)
+	{
+		c.pin_sha256 = alloc::alloc_array_try(allocator, char, (sz)cfg.pin_sha256.len)!;
+		c.pin_sha256[..] = cfg.pin_sha256[..];
+	}
+	return c;
+}
+
+fn void Context.free(&self)
+{
+	if (self.handle) ossl::ssl_ctx_free(self.handle);
+	if (self.pin_sha256.ptr) alloc::free(self.allocator, self.pin_sha256.ptr);
+	*self = {};
+}
+
+// One TLS connection: the engine sees only bytes. Ciphertext goes in with feed and comes out with take_out;
+// plaintext goes in with write and out with read. No sockets, no clock, no blocking.
+struct Conn
+{
+	ossl::Ssl* ssl;
+	ossl::Bio* rbio;             // ciphertext in
+	ossl::Bio* wbio;             // ciphertext out
+	Context* ctx;                // not owned
+	bool server;
+	bool handshake_done;
+	bool eof_fed;
+	bool close_notify_received;
+	bool close_notify_sent;
+	bool failed;                 // sticky: every later call returns the stored fault
+	fault failure;
+	char last_alert;             // code of the last received fatal alert, 0 = none
+	char[256] error_text;        // last OpenSSL error text (diagnostics only, never key material)
+	Allocator allocator;
+}
+
+// Client connection. A DNS name is sent as SNI and, with FULL verification, checked against the certificate;
+// an IP literal is checked against the certificate's IP addresses and is never sent as SNI. With FULL
+// verification the name is required; other modes may pass an empty name (no SNI, no name check).
+fn Conn? Context.new_client_conn(&self, String server_name, Allocator allocator = mem)
+{
+	if (self.server || !self.handle) return CONFIG_INVALID~;
+	bool check_name = self.verify == FULL;
+	if (server_name.len == 0 && check_name) return CONFIG_INVALID~;
+	NamePlan plan = {};
+	if (server_name.len > 0) plan = validate_server_name(server_name)!;
+	defer ossl::err_clear_error();
+
+	ossl::Bio* rbio = ossl::bio_new(ossl::bio_s_mem());
+	ossl::Bio* wbio = ossl::bio_new(ossl::bio_s_mem());
+	ossl::Ssl* ssl = (rbio && wbio) ? ossl::ssl_new(self.handle) : null;
+	if (!ssl)
+	{
+		if (rbio) ossl::bio_free(rbio);
+		if (wbio) ossl::bio_free(wbio);
+		return ossl_fail(OPENSSL_ERROR)~;
+	}
+	ossl::ssl_set_bio(ssl, rbio, wbio); // the SSL owns both from here on
+	defer catch ossl::ssl_free(ssl);
+	ossl::ssl_set_connect_state(ssl);
+
+	if (server_name.len > 0)
+	{
+		char* zname = (char*)plan.name.zstr_tcopy();
+		if (plan.kind == DNS)
+		{
+			if (ossl::set_sni(ssl, zname) != 1) return ossl_fail(OPENSSL_ERROR)~;
+			if (check_name)
+			{
+				ossl::ssl_set_hostflags(ssl, ossl::X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS | ossl::X509_CHECK_FLAG_NEVER_CHECK_SUBJECT);
+				if (ossl::ssl_set1_host(ssl, zname) != 1) return ossl_fail(OPENSSL_ERROR)~;
+			}
+		}
+		else if (check_name)
+		{
+			if (ossl::x509_verify_param_set1_ip_asc(ossl::ssl_get0_param(ssl), zname) != 1) return ossl_fail(CONFIG_INVALID)~;
+		}
+	}
+	return { .ssl = ssl, .rbio = rbio, .wbio = wbio, .ctx = self, .allocator = allocator };
+}
+
+fn void Conn.free(&self)
+{
+	if (self.ssl) ossl::ssl_free(self.ssl); // also frees both BIOs
+	*self = {};
+}
+
+// Records the first fault; the error queue text is kept for diagnostics.
+fn fault Conn.fail(&self, fault f)
+{
+	if (!self.failed)
+	{
+		self.failed = true;
+		self.failure = f;
+		ossl::err_take(&self.error_text);
+	}
+	ossl::err_clear_error();
+	return self.failure;
+}
+
+// Ciphertext in. Returns the bytes accepted: at most MAX_INBOUND unread bytes are buffered, so a caller that is
+// offered more than fits must try the rest again after read() or handshake() consumed input.
+fn usz Conn.feed(&self, char[] ciphertext)
+{
+	if (!self.ssl) return 0;
+	usz pending = ossl::bio_ctrl_pending(self.rbio);
+	usz room = pending < MAX_INBOUND ? MAX_INBOUND - pending : 0;
+	usz n = min((usz)ciphertext.len, room);
+	if (n == 0) return 0;
+	return ossl::bio_write(self.rbio, ciphertext.ptr, (CInt)n) > 0 ? n : 0;
+}
+
+// The network reported end of stream.
+fn void Conn.feed_eof(&self) => self.eof_fed = true;
+
+fn usz Conn.out_pending(&self) => self.ssl ? ossl::bio_ctrl_pending(self.wbio) : 0;
+
+// Ciphertext out. Drain after every other call, also after faults: fatal alerts wait here.
+fn usz Conn.take_out(&self, char[] buf)
+{
+	usz n = min((usz)buf.len, self.out_pending());
+	if (n == 0) return 0;
+	CInt got = ossl::bio_read(self.wbio, buf.ptr, (CInt)n);
+	return got > 0 ? (usz)got : 0;
+}
+
+// Drives the handshake. true = finished; false = more input needed (drain the out queue first).
+fn bool? Conn.handshake(&self)
+{
+	if (self.failed) return self.failure~;
+	if (self.handshake_done) return true;
+	ossl::err_clear_error();
+	CInt r = ossl::ssl_do_handshake(self.ssl);
+	if (r == 1)
+	{
+		self.handshake_done = true;
+		return true;
+	}
+	CInt e = ossl::ssl_get_error(self.ssl, r);
+	if (e == ossl::SSL_ERROR_WANT_READ || e == ossl::SSL_ERROR_WANT_WRITE)
+	{
+		if (self.eof_fed) return self.fail(TRUNCATED)~;
+		return false;
+	}
+	return self.fail(map_ssl_error(e, self.ssl, true, &self.last_alert))~;
+}
+
+// Plaintext out. WANT_INPUT: no full record yet. CLOSED: the peer sent close_notify. TRUNCATED: the transport
+// ended without it. A buffer of length 0 returns 0.
+fn usz? Conn.read(&self, char[] plain)
+{
+	if (self.failed) return self.failure~;
+	if (!self.handshake_done) return NOT_CONNECTED~;
+	if (plain.len == 0) return 0;
+	ossl::err_clear_error();
+	usz n = 0;
+	if (ossl::ssl_read_ex(self.ssl, plain.ptr, plain.len, &n) == 1) return n;
+	CInt e = ossl::ssl_get_error(self.ssl, 0);
+	if (e == ossl::SSL_ERROR_ZERO_RETURN)
+	{
+		self.close_notify_received = true;
+		return CLOSED~;
+	}
+	if (e == ossl::SSL_ERROR_WANT_READ || e == ossl::SSL_ERROR_WANT_WRITE)
+	{
+		if (self.eof_fed && !self.close_notify_received) return self.fail(TRUNCATED)~;
+		return WANT_INPUT~;
+	}
+	return self.fail(map_ssl_error(e, self.ssl, false, &self.last_alert))~;
+}
+
+// Plaintext in: all of it is encrypted into the out queue, or a fault. Empty input returns 0 and emits nothing.
+fn usz? Conn.write(&self, char[] plain)
+{
+	if (self.failed) return self.failure~;
+	if (!self.handshake_done) return NOT_CONNECTED~;
+	if (self.close_notify_sent) return CLOSED~;
+	if (plain.len == 0) return 0;
+	ossl::err_clear_error();
+	usz n = 0;
+	if (ossl::ssl_write_ex(self.ssl, plain.ptr, plain.len, &n) == 1) return n;
+	CInt e = ossl::ssl_get_error(self.ssl, 0);
+	return self.fail(map_ssl_error(e, self.ssl, false, &self.last_alert))~;
+}
+
+// Queues close_notify. It does not wait for the peer's. After a fault there is nothing to send.
+fn void? Conn.close_notify(&self)
+{
+	if (self.failed || self.close_notify_sent) return;
+	self.close_notify_sent = true;
+	if (!self.handshake_done) return;
+	ossl::err_clear_error();
+	ossl::ssl_shutdown(self.ssl);
+	ossl::err_clear_error();
+}
