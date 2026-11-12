@@ -615,3 +615,74 @@ fn void test_loopback_server_context_records_the_client_certificate_demand() @te
 	assert(!c.server);
 	assert(!c.requires_client_cert);
 }
+
+fn void test_loopback_server_alpn_prefers_its_own_order() @test
+{
+	if (!loopback::pki_ready()) return;
+	ServerConfig sc = loopback::server_cfg("server");
+	sc.alpn = { "h2", "http/1.1" };
+	ClientConfig cc = loopback::client_cfg();
+	cc.alpn = { "http/1.1", "h2" };
+	Pair p;
+	p.open(cc, sc, "localhost");
+	defer p.close();
+	expect_ok(&p, "TLSv1.3");
+	assert(p.c.alpn_selected() == "h2");
+	assert(p.s.alpn_selected() == "h2");
+}
+
+fn void test_loopback_server_alpn_without_overlap_selects_nothing() @test
+{
+	if (!loopback::pki_ready()) return;
+	ServerConfig sc = loopback::server_cfg("server");
+	sc.alpn = { "h2" };
+	ClientConfig cc = loopback::client_cfg();
+	cc.alpn = { "foo" };
+	Pair p;
+	p.open(cc, sc, "localhost");
+	defer p.close();
+	expect_ok(&p, "TLSv1.3");
+	assert(p.c.alpn_selected() == "");
+	// and a client that asks for nothing gets nothing, with the server's list left alone
+	Pair q;
+	q.open(loopback::client_cfg(), sc, "localhost");
+	defer q.close();
+	assert(q.c.alpn_selected() == "");
+	// a client that requires one of its own refuses the outcome
+	cc.require_alpn = true;
+	Pair r;
+	r.open(cc, sc, "localhost");
+	defer r.close();
+	assert(r.outcome.client_fault == tls::ALPN_MISMATCH);
+}
+
+fn void test_loopback_server_sees_the_requested_name() @test
+{
+	if (!loopback::pki_ready()) return;
+	Pair p;
+	p.open(loopback::client_cfg(), loopback::server_cfg("server"), "test.example");
+	defer p.close();
+	expect_ok(&p, "TLSv1.3");
+	assert(p.s.requested_name() == "test.example");
+	// an address is not a name: nothing is sent
+	Pair q;
+	q.open(loopback::client_cfg(), loopback::server_cfg("server"), "127.0.0.1");
+	defer q.close();
+	assert(q.s.requested_name() == "");
+}
+
+fn void test_loopback_server_alpn_list_is_validated() @test
+{
+	if (!loopback::pki_ready()) return;
+	ServerConfig sc = loopback::server_cfg("server");
+	sc.alpn = { "h2", "" };
+	assert(@catch(tls::new_server_context(&sc)) == tls::CONFIG_INVALID);
+	TrackingAllocator ta;
+	ta.init(mem);
+	defer ta.free();
+	ServerConfig ok = loopback::server_cfg("server");
+	ok.alpn = { "h2" };
+	Context ctx = tls::new_server_context(&ok, &ta)!!;
+	ctx.free();
+	assert(ta.allocation_count() == 0);
+}
