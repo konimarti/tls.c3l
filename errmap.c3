@@ -81,7 +81,7 @@ fn fault map_ssl_reason(ulong err, bool handshaking, char* out_alert = null)
 	}
 }
 
-// Full mapping order for failed SSL operations per DESIGN 6.
+// Full mapping order for a failed SSL operation: verification result first, then the error queue, then the SSL error code.
 fn fault map_ssl_error(CInt ssl_err, ossl::Ssl* s, bool handshaking, char* out_alert = null)
 {
 	switch (ssl_err)

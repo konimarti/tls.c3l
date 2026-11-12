@@ -1,5 +1,5 @@
 // The ONLY module that mentions OpenSSL. A pure-C3 backend replaces ossl.c3, errmap.c3 and engine.c3
-// (see DESIGN 2: config.c3 and adapter.c3 are backend independent).
+// (config.c3 and adapter.c3 do not depend on OpenSSL).
 // Every @cname symbol below must exist in libssl.so.3 / libcrypto.so.3: scripts/check-symbols.sh.
 module tls::ossl;
 
