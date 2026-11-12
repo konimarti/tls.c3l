@@ -158,6 +158,9 @@ build/tlsc --listen 8443 --cert server.pem --key server.key [--client-ca ca.pem]
 It prints the negotiated version and cipher and a `verify:` line (`ok`, `pinned`, or `SKIPPED` with `--insecure`), then
 relays standard input and output. Verification can only be turned off by name (`--insecure`, `--chain-only`).
 
+The server mode is a test tool: it listens on 127.0.0.1 only, serves one connection at a time (a silent client holds it
+for up to the 10 s handshake limit), and offers at most 16 `--alpn` names.
+
 ### Tests
 
 `c3c test` runs the unit tests. Tests that need certificates or real peers print `SKIP` and pass without them. For the

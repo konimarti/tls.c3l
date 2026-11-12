@@ -3,7 +3,7 @@
 module tlsc;
 
 import tls;
-import std::io, std::net::tcp, std::time, std::encoding::hex;
+import std::io, std::net::tcp, std::time, std::thread, std::encoding::hex;
 
 const String VERSION = env::PROJECT_VERSION;
 
@@ -345,7 +345,12 @@ fn int listen(Options* o)
 	while (true)
 	{
 		TcpSocket? sock = tcp::accept(&server);
-		if (catch err = sock) continue;
+		if (catch err = sock)
+		{
+			// persistent failures (no descriptors left) must not turn this into a busy loop
+			(void)thread::sleep_ms(100);
+			continue;
+		}
 		serve(&ctx, sock, o.verbose);
 	}
 }
