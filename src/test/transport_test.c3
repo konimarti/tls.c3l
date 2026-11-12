@@ -174,6 +174,26 @@ fn void test_mem_closed_after_drain() @test
 	assert(@catch(b.write("x", time::DURATION_ZERO)) == tls::CLOSED);
 }
 
+fn void test_mem_free_leaves_the_other_end_closed() @test
+{
+	TrackingAllocator ta;
+	ta.init(mem);
+	defer ta.free();
+	MemTransport a, b;
+	tls::mem_pair(&a, &b, &ta);
+	a.write("tail", time::DURATION_ZERO)!!;
+	b.write("x", time::DURATION_ZERO)!!;
+	a.free();
+	char[8] buf;
+	// what arrived before the free is still readable, then the end of stream shows
+	assert(b.read(&buf, time::DURATION_ZERO)!! == 4);
+	assert(@catch(b.read(&buf, time::DURATION_ZERO)) == tls::CLOSED);
+	assert(@catch(b.write("data", time::DURATION_ZERO)) == tls::CLOSED);
+	b.free();
+	assert(!ta.has_leaks());
+	assert(ta.allocation_count() == 0);
+}
+
 fn void test_mem_conformance() @test
 {
 	MemTransport a, b;

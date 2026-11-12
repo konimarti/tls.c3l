@@ -37,6 +37,8 @@ fn void mem_pair(MemTransport* a, MemTransport* b, Allocator allocator)
 
 fn void MemTransport.free(&self)
 {
+	// the other end must not keep writing into freed storage: it sees a closed peer
+	if (self.peer && self.peer.peer == self) self.peer.peer = null;
 	self.inbox.free();
 	*self = {};
 }
