@@ -126,6 +126,7 @@ fn void test_wire_alert_names() @test
 	assert(wire::alert_name(22) == "record_overflow");
 	assert(wire::alert_name(40) == "handshake_failure");
 	assert(wire::alert_name(42) == "bad_certificate");
+	assert(wire::alert_name(43) == "unsupported_certificate");
 	assert(wire::alert_name(44) == "certificate_revoked");
 	assert(wire::alert_name(45) == "certificate_expired");
 	assert(wire::alert_name(46) == "certificate_unknown");
