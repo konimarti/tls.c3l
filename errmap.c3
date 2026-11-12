@@ -22,8 +22,9 @@ fn fault map_verify_code(long code)
 			return HOSTNAME_MISMATCH;
 		case 23:
 			return CERT_REVOKED;
-		case 24:
-		case 26:
+		case 24: // issuer certificate has no public key
+		case 26: // unsuitable purpose
+		case 79: // invalid CA certificate (OpenSSL 3.5 reports a non-CA issuer with this number)
 		case 9999:
 		default:
 			return CERT_INVALID;
@@ -59,6 +60,14 @@ fn fault map_ssl_reason(ulong err, bool handshaking, char* out_alert = null)
 		case 191: // no protocols available
 		case 116: // bad protocol version number
 			return PROTOCOL_VERSION;
+		case 199: // peer did not return a certificate (server side, client certificate required)
+			return NO_PEER_CERT;
+		case 396: // version too low (a ClientHello below the server's minimum)
+			return PROTOCOL_VERSION;
+		case 244: // unexpected message
+		case 156: // http request
+		case 160: // length too short
+			return PROTOCOL_ERROR;
 		case 193: // no shared cipher
 			return NO_SHARED_CIPHER;
 		case 294: // unexpected eof while reading

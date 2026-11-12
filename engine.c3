@@ -6,6 +6,7 @@ import tls::wire;
 // Used as the passphrase of every private key: a non-NULL value stops OpenSSL's default callback from asking on the
 // terminal, so an encrypted key fails to load instead of blocking.
 const char[1] NO_PASSPHRASE = { 0 };
+const String SESSION_ID_CONTEXT = "tls.c3l";
 
 struct Context
 {
@@ -117,6 +118,55 @@ fn Context? new_client_context(ClientConfig* cfg, Allocator allocator = mem)
 	return c;
 }
 
+// Server side: certificate chain and key from PEM files. With client_ca_file set, a client certificate that chains to
+// those CAs is required (mutual TLS).
+fn Context? new_server_context(ServerConfig* cfg, Allocator allocator = mem)
+{
+	cfg.validate()!;
+	ossl::init()!;
+	defer ossl::err_clear_error();
+
+	ossl::SslCtx* ctx = ossl::ssl_ctx_new(ossl::tls_server_method());
+	if (!ctx) return ossl_fail(OPENSSL_ERROR)~;
+	defer catch ossl::ssl_ctx_free(ctx);
+
+	if (ossl::ctx_set_min_proto(ctx, cfg.min_wire()) != 1) return ossl_fail(OPENSSL_ERROR)~;
+	if (ossl::ctx_set_max_proto(ctx, cfg.max_wire()) != 1) return ossl_fail(OPENSSL_ERROR)~;
+	ossl::ssl_ctx_set_options(ctx, ossl::SSL_OP_NO_COMPRESSION | ossl::SSL_OP_NO_RENEGOTIATION);
+	ossl::ssl_ctx_set_verify_depth(ctx, cfg.max_chain_depth > 0 ? cfg.max_chain_depth : DEFAULT_CHAIN_DEPTH);
+	// session reuse needs an identity for this context, and client certificate checks insist on one
+	if (ossl::ssl_ctx_set_session_id_context(ctx, SESSION_ID_CONTEXT.ptr, (CUInt)SESSION_ID_CONTEXT.len) != 1)
+	{
+		return ossl_fail(OPENSSL_ERROR)~;
+	}
+
+	ossl::ssl_ctx_set_default_passwd_cb_userdata(ctx, &NO_PASSPHRASE);
+	if (ossl::ssl_ctx_use_certificate_chain_file(ctx, (char*)cfg.cert_file.zstr_tcopy()) != 1)
+	{
+		return ossl_fail(CERT_LOAD_FAILED)~;
+	}
+	if (ossl::ssl_ctx_use_privatekey_file(ctx, (char*)cfg.key_file.zstr_tcopy(), ossl::SSL_FILETYPE_PEM) != 1)
+	{
+		return ossl_fail(KEY_LOAD_FAILED)~;
+	}
+	if (ossl::ssl_ctx_check_private_key(ctx) != 1) return ossl_fail(KEY_LOAD_FAILED)~;
+
+	if (cfg.client_ca_file.len > 0)
+	{
+		char* ca = (char*)cfg.client_ca_file.zstr_tcopy();
+		if (ossl::ssl_ctx_load_verify_file(ctx, ca) != 1) return ossl_fail(CA_LOAD_FAILED)~;
+		void* names = ossl::ssl_load_client_ca_file(ca);
+		if (!names) return ossl_fail(CA_LOAD_FAILED)~;
+		ossl::ssl_ctx_set_client_ca_list(ctx, names); // takes ownership of the list
+		ossl::ssl_ctx_set_verify(ctx, ossl::SSL_VERIFY_PEER | ossl::SSL_VERIFY_FAIL_IF_NO_PEER_CERT, null);
+	}
+	if (cfg.groups.len > 0 && ossl::ctx_set_groups(ctx, (char*)cfg.groups.zstr_tcopy()) != 1)
+	{
+		return ossl_fail(CONFIG_INVALID)~;
+	}
+	return { .handle = ctx, .server = true, .verify = cfg.client_ca_file.len > 0 ? CHAIN_ONLY : INSECURE_NONE, .allocator = allocator };
+}
+
 fn void Context.free(&self)
 {
 	if (self.handle) ossl::ssl_ctx_free(self.handle);
@@ -156,17 +206,9 @@ fn Conn? Context.new_client_conn(&self, String server_name, Allocator allocator 
 	if (server_name.len > 0) plan = validate_server_name(server_name)!;
 	defer ossl::err_clear_error();
 
-	ossl::Bio* rbio = ossl::bio_new(ossl::bio_s_mem());
-	ossl::Bio* wbio = ossl::bio_new(ossl::bio_s_mem());
-	ossl::Ssl* ssl = (rbio && wbio) ? ossl::ssl_new(self.handle) : null;
-	if (!ssl)
-	{
-		if (rbio) ossl::bio_free(rbio);
-		if (wbio) ossl::bio_free(wbio);
-		return ossl_fail(OPENSSL_ERROR)~;
-	}
-	ossl::ssl_set_bio(ssl, rbio, wbio); // the SSL owns both from here on
-	defer catch ossl::ssl_free(ssl);
+	Conn conn = self.make_conn(allocator)!;
+	defer catch conn.free();
+	ossl::Ssl* ssl = conn.ssl;
 	ossl::ssl_set_connect_state(ssl);
 
 	if (server_name.len > 0)
@@ -186,6 +228,33 @@ fn Conn? Context.new_client_conn(&self, String server_name, Allocator allocator 
 			if (ossl::x509_verify_param_set1_ip_asc(ossl::ssl_get0_param(ssl), zname) != 1) return ossl_fail(CONFIG_INVALID)~;
 		}
 	}
+	return conn;
+}
+
+// Server connection on a server context.
+fn Conn? Context.new_server_conn(&self, Allocator allocator = mem)
+{
+	if (!self.server || !self.handle) return CONFIG_INVALID~;
+	defer ossl::err_clear_error();
+	Conn conn = self.make_conn(allocator)!;
+	ossl::ssl_set_accept_state(conn.ssl);
+	conn.server = true;
+	return conn;
+}
+
+// An SSL object with its two memory BIOs. The SSL owns the BIOs once they are attached.
+fn Conn? Context.make_conn(&self, Allocator allocator)
+{
+	ossl::Bio* rbio = ossl::bio_new(ossl::bio_s_mem());
+	ossl::Bio* wbio = ossl::bio_new(ossl::bio_s_mem());
+	ossl::Ssl* ssl = (rbio && wbio) ? ossl::ssl_new(self.handle) : null;
+	if (!ssl)
+	{
+		if (rbio) ossl::bio_free(rbio);
+		if (wbio) ossl::bio_free(wbio);
+		return ossl_fail(OPENSSL_ERROR)~;
+	}
+	ossl::ssl_set_bio(ssl, rbio, wbio);
 	return { .ssl = ssl, .rbio = rbio, .wbio = wbio, .ctx = self, .allocator = allocator };
 }
 
@@ -243,6 +312,15 @@ fn bool? Conn.handshake(&self)
 	CInt r = ossl::ssl_do_handshake(self.ssl);
 	if (r == 1)
 	{
+		// a configured pin must match the peer certificate before any data flows
+		if (self.ctx.pin_sha256.len > 0)
+		{
+			char[32] digest;
+			if (!self.peer_digest(&digest) || ossl::crypto_memcmp(digest[..].ptr, self.ctx.pin_sha256.ptr, 32) != 0)
+			{
+				return self.fail(PIN_MISMATCH)~;
+			}
+		}
 		self.handshake_done = true;
 		return true;
 	}
@@ -302,4 +380,34 @@ fn void? Conn.close_notify(&self)
 	ossl::err_clear_error();
 	ossl::ssl_shutdown(self.ssl);
 	ossl::err_clear_error();
+}
+
+// SHA-256 of the peer certificate in DER form. False when the peer sent no certificate.
+fn bool Conn.peer_digest(&self, char[32]* digest)
+{
+	ossl::X509Cert* cert = ossl::ssl_get1_peer_certificate(self.ssl);
+	if (!cert) return false;
+	defer ossl::x509_free(cert);
+	CUInt len = 0;
+	return ossl::x509_digest(cert, ossl::evp_sha256(), (char*)digest, &len) == 1 && len == 32;
+}
+
+// The peer certificate fingerprint, for pinning. NO_PEER_CERT when there is none.
+fn char[]? Conn.peer_cert_sha256(&self, Allocator allocator = mem)
+{
+	char[32] digest;
+	if (!self.peer_digest(&digest)) return NO_PEER_CERT~;
+	char[] out = alloc::alloc_array_try(allocator, char, 32)!;
+	out[..] = digest[..];
+	return out;
+}
+
+// The raw X509_V_ERR_* result of the certificate check, 0 = ok.
+fn long Conn.verify_result(&self) => self.ssl ? ossl::ssl_get_verify_result(self.ssl) : 0;
+
+// "TLSv1.3", "TLSv1.2", ... once the version is known. The string belongs to OpenSSL and is static.
+fn String Conn.version_name(&self)
+{
+	if (!self.ssl) return "";
+	return ((ZString)ossl::ssl_get_version(self.ssl)).str_view();
 }
