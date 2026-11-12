@@ -15,6 +15,9 @@ struct ServerEnd (Transport)
 	int fail_writes;           // the next writes fail with TIMEOUT without reaching the server
 	usz read_limit;            // 0 = no limit, otherwise at most this many bytes per read
 	int read_delay_ms;         // every read takes this long
+	int reads_before_fault;    // after this many reads, every read fails with `read_fault` (0 = never)
+	fault read_fault;
+	bool read_fault_active;
 	bool closed;
 }
 
@@ -51,6 +54,8 @@ fn usz? ServerEnd.read(&self, char[] buf, Duration timeout) @dynamic
 	if (self.closed) return tls::CLOSED~;
 	if (buf.len == 0) return 0;
 	if (self.read_delay_ms > 0) thread::sleep_ms(self.read_delay_ms)!!;
+	if (self.reads_before_fault > 0 && --self.reads_before_fault == 0) self.read_fault_active = true;
+	if (self.read_fault_active) return self.read_fault~;
 	usz avail = (usz)self.inbox.len() - self.read_pos;
 	if (avail == 0)
 	{
