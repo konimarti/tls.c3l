@@ -85,6 +85,8 @@ fn bool is_ipv4_literal(String s)
 			i++;
 		}
 		if (i == start || i - start > 3) return false;
+		// a leading zero is ambiguous (octal in some parsers): not an address, whatever the OpenSSL version does with it
+		if (i - start > 1 && s[start] == '0') return false;
 		parts++;
 		if (i == s.len) break;
 		if (s[i] != '.') return false;

@@ -535,8 +535,11 @@ fn void test_engine_close_before_the_handshake_prevents_it() @test
 
 fn void test_engine_address_with_a_leading_zero_is_refused() @test
 {
-	// classified as an address by the name check, refused by OpenSSL when it is set as the expected address
-	assert(tls::validate_server_name("01.2.3.4")!!.kind == IPV4);
+	// refused by our own name check (all numeric, so not a host name either), not left to the OpenSSL version
+	assert(@catch(tls::validate_server_name("01.2.3.4")) == tls::CONFIG_INVALID);
+	assert(@catch(tls::validate_server_name("1.2.3.04")) == tls::CONFIG_INVALID);
+	assert(tls::validate_server_name("10.0.0.1")!!.kind == IPV4);
+	assert(tls::validate_server_name("1.2.3.0")!!.kind == IPV4);
 	Context ctx = client_ctx({});
 	defer ctx.free();
 	assert(@catch(ctx.new_client_conn("01.2.3.4")) == tls::CONFIG_INVALID);
