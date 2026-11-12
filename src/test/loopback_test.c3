@@ -686,3 +686,35 @@ fn void test_loopback_server_alpn_list_is_validated() @test
 	ctx.free();
 	assert(ta.allocation_count() == 0);
 }
+
+fn void test_loopback_server_does_not_pass_on_a_hostile_server_name() @test
+{
+	if (!loopback::pki_ready()) return;
+	// the client picks the bytes of the name; our own client refuses to send these, so the SNI is set at the OpenSSL level
+	String[4] hostile = { "x\x1b[31mred\x01y", "evil\nINJECTED line", "with space.example", "caf\xc3\xa9.example" };
+	foreach (name : hostile)
+	{
+		Context cctx = tls::new_client_context(&&loopback::client_cfg())!!;
+		defer cctx.free();
+		ServerConfig sc = loopback::server_cfg("server");
+		Context sctx = tls::new_server_context(&sc)!!;
+		defer sctx.free();
+		Conn c = cctx.new_client_conn("localhost")!!;
+		defer c.free();
+		Conn s = sctx.new_server_conn()!!;
+		defer s.free();
+		char[64] z;
+		z[:name.len][..] = ((char[])name)[..];
+		z[name.len] = 0;
+		assert(ossl::set_sni(c.ssl, &z[0]) == 1);
+		Link link;
+		Outcome o = loopback::run_handshake(&c, &s, &link);
+		assert(o.server_done || o.server_fault, "no outcome");
+		assert(s.requested_name() == "", "name '%s' was passed on", s.requested_name());
+	}
+	// a plain name still comes through
+	Pair p;
+	p.open(loopback::client_cfg(), loopback::server_cfg("server"), "test.example");
+	defer p.close();
+	assert(p.s.requested_name() == "test.example");
+}

@@ -643,13 +643,22 @@ fn void wipe_session(char[] blob)
 	if (blob.len > 0) ossl::openssl_cleanse(blob.ptr, blob.len);
 }
 
-// The server name the client sent (SNI), empty when none. Server connections only; the bytes belong to OpenSSL and stay
-// valid until the connection is freed.
+// The server name the client sent (SNI), empty when none or when it is not a plausible host name. The client chooses
+// these bytes: anything but letters, digits, '-', '.' and '_' (control characters, escape sequences) is refused, so the
+// result can be logged or shown safely. Server connections only; the bytes belong to OpenSSL and stay valid until the
+// connection is freed.
 fn String Conn.requested_name(&self)
 {
 	if (!self.ssl) return "";
 	char* name = (char*)ossl::ssl_get_servername(self.ssl, ossl::TLSEXT_NAMETYPE_HOST_NAME_TYPE);
-	return name ? ((ZString)name).str_view() : "";
+	if (!name) return "";
+	String s = ((ZString)name).str_view();
+	foreach (c : s)
+	{
+		bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '.' || c == '_';
+		if (!ok) return "";
+	}
+	return s;
 }
 
 // The negotiated cipher suite, e.g. "TLS_AES_256_GCM_SHA384" (empty before the handshake). Static OpenSSL string.

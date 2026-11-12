@@ -156,6 +156,14 @@ fn int usage_error(String what)
 
 fn String describe(fault f) => f.description;
 
+// A copy of text from the network that is safe to print: anything but visible ASCII becomes '?'.
+fn String safe(String s)
+{
+	DString d = dstring::temp();
+	foreach (c : s) d.append_char(c >= 0x20 && c < 0x7f ? c : '?');
+	return d.str_view();
+}
+
 // ---- client ----
 
 fn int client(Options* o)
@@ -214,7 +222,7 @@ fn int client(Options* o)
 	}
 	defer t.free();
 	io::printfn("%s %s", t.conn.version_name(), t.conn.cipher_name());
-	if (t.conn.alpn_selected().len > 0) io::printfn("alpn: %s", t.conn.alpn_selected());
+	if (t.conn.alpn_selected().len > 0) io::printfn("alpn: %s", safe(t.conn.alpn_selected()));
 	switch (cfg.verify)
 	{
 		case FULL:
