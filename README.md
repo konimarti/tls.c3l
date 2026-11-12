@@ -47,6 +47,11 @@ usz n = t.read(&buf, 5 * time::SEC)!;
 t.close()!;
 ```
 
+Trust: a configured `ca_file` or `ca_dir` replaces the system store (add `also_system_roots` to keep it). On
+Windows the system store is read through OpenSSL's `org.openssl.winstore://` URI, which needs OpenSSL 3.2 or later;
+with an older OpenSSL a context without a CA file or directory fails with `CA_LOAD_FAILED`, so pass `ca_file` there.
+That path is only type-checked so far, it has not run on Windows.
+
 A fault from `write` on a `TlsTransport` is final: part of the data may have been sent, and TLS cannot
 continue after a gap, so every later call reports the same fault and the connection has to be made again.
 A `read` that times out can simply be called again.
