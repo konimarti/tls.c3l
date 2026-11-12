@@ -1,0 +1,6 @@
+build
+testrun
+obj
+tags
+tests/pki/out
+tests/peer/out
