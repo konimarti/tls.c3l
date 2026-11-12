@@ -231,6 +231,8 @@ fn ClientHelloInfo? parse_client_hello(char[] record, Allocator allocator)
 	r.take(compression_len)!;
 	if (r.remaining() == 0) return info;        // no extensions (allowed by the grammar)
 	bool seen_sni, seen_groups, seen_versions, seen_alpn;
+	char[8192] seen_types;                      // one bit per extension type
+	seen_types[..] = 0;
 
 	usz ext_total = r.u16()!;
 	if (ext_total != r.remaining()) return BAD_HANDSHAKE~;
@@ -238,6 +240,9 @@ fn ClientHelloInfo? parse_client_hello(char[] record, Allocator allocator)
 	{
 		ushort ext_type = r.u16()!;
 		Reader ext = { .data = r.take(r.u16()!)! };
+		// RFC 8446 4.2: no extension type may appear twice
+		if (seen_types[ext_type / 8] & (char)(1 << (ext_type % 8))) return BAD_HANDSHAKE~;
+		seen_types[ext_type / 8] |= (char)(1 << (ext_type % 8));
 		switch (ext_type)
 		{
 			case EXT_SERVER_NAME:

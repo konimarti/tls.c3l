@@ -340,3 +340,23 @@ fn void test_hello_fixed_field_sizes_enforced() @test
 	// session id longer than 32 bytes
 	assert(@catch(wire::parse_client_hello(hello_with(33, hx("13 01"), hx("00")), tmem)) == wire::BAD_HANDSHAKE);
 }
+
+fn void test_hello_duplicate_unknown_extension_rejected() @test
+{
+	TrackingAllocator ta;
+	ta.init(mem);
+	defer ta.free();
+	char[] unknown = ext(0x4a4a, hx("de ad"));
+	assert(@catch(wire::parse_client_hello(build_hello(0x0303, { 0x1301 }, cat(unknown, unknown), true), &ta)) == wire::BAD_HANDSHAKE);
+	// the same type twice with different bodies, and with other extensions between them
+	char[] other = ext(0x4a4a, hx("be ef"));
+	char[] sni = ext(0, hx("00 09 00 00 06 61 2e 74 65 73 74"));
+	assert(@catch(wire::parse_client_hello(build_hello(0x0303, { 0x1301 }, cat(cat(unknown, sni), other), true), &ta)) == wire::BAD_HANDSHAKE);
+	// the highest type value is covered by the bitmap too
+	char[] top = ext(0xffff, hx("00"));
+	assert(@catch(wire::parse_client_hello(build_hello(0x0303, { 0x1301 }, cat(top, top), true), &ta)) == wire::BAD_HANDSHAKE);
+	// different unknown types are fine
+	ClientHelloInfo info = wire::parse_client_hello(build_hello(0x0303, { 0x1301 }, cat(unknown, ext(0x5a5a, hx("00"))), true), &ta)!!;
+	info.free();
+	assert(!ta.has_leaks());
+}
