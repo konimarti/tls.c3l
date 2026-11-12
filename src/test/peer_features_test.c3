@@ -304,33 +304,38 @@ fn void test_peer_certificate_in_der_form() @test
 
 // ---- key exchange groups ----
 
+fn void get_page(String scenario, ClientConfig cfg)
+{
+	Session s;
+	defer s.close();
+	s.open(scenario, cfg, "localhost")!!;
+	s.t.write("GET / HTTP/1.0\r\n\r\n", 5 * time::SEC)!!;
+	char[16] buf;
+	s.t.read(&buf, 5 * time::SEC)!!;
+}
+
 fn void test_peer_groups_restricted_to_one_curve() @test
 {
 	if (!peer_support::peers_ready()) return;
 	usz hybrid = peer_support::log_count("trace13", "NamedGroup: X25519MLKEM768");
+	usz p256 = peer_support::log_count("trace13", "NamedGroup: secp256r1");
 	ClientConfig narrow = with_ca();
 	narrow.groups = "P-256";
+	get_page("trace13", narrow);
+	// wait until the narrow hello has been printed (it offers P-256 only); the log is ordered, so everything that hello
+	// contained is in the file by then, and the absence of the hybrid group is a fact, not a lag
+	usz after_p256 = p256;
+	for (int i = 0; i < 100 && after_p256 == p256; i++)
 	{
-		Session s;
-		defer s.close();
-		s.open("trace13", narrow, "localhost")!!;
-		s.t.write("GET / HTTP/1.0\r\n\r\n", 5 * time::SEC)!!;
-		char[16] buf;
-		s.t.read(&buf, 5 * time::SEC)!!;
+		thread::sleep_ms(50)!!;
+		after_p256 = peer_support::log_count("trace13", "NamedGroup: secp256r1");
 	}
-	thread::sleep_ms(300)!!;
+	assert(after_p256 > p256, "the narrow hello never showed up in the peer's log");
 	assert(peer_support::log_count("trace13", "NamedGroup: X25519MLKEM768") == hybrid, "the hybrid group was offered");
 	// the default offer includes it, and the peer accepts that too
-	{
-		Session s;
-		defer s.close();
-		s.open("trace13", with_ca(), "localhost")!!;
-		s.t.write("GET / HTTP/1.0\r\n\r\n", 5 * time::SEC)!!;
-		char[16] buf;
-		s.t.read(&buf, 5 * time::SEC)!!;
-	}
+	get_page("trace13", with_ca());
 	usz after = hybrid;
-	for (int i = 0; i < 40 && after == hybrid; i++)
+	for (int i = 0; i < 100 && after == hybrid; i++)
 	{
 		thread::sleep_ms(50)!!;
 		after = peer_support::log_count("trace13", "NamedGroup: X25519MLKEM768");
