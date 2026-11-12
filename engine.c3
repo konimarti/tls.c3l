@@ -194,6 +194,7 @@ struct Conn
 	bool eof_fed;
 	bool close_notify_received;
 	bool close_notify_sent;
+	bool pin_checked;            // the configured pin has been compared with the peer certificate
 	bool failed;                 // sticky: every later call returns the stored fault
 	fault failure;
 	char last_alert;             // code of the last received fatal alert, 0 = none
@@ -318,21 +319,18 @@ fn bool? Conn.handshake(&self)
 	if (self.close_notify_sent) return CLOSED~; // closed before the handshake finished: do not start one
 	ossl::err_clear_error();
 	CInt r = ossl::ssl_do_handshake(self.ssl);
+	// The pin is compared as soon as the peer's certificate is known, which can be before the handshake is over:
+	// in TLS 1.2 our certificate and Finished are queued in the very call that learns the server's.
+	if (self.pin_mismatch())
+	{
+		// the peer is not the one we pinned: nothing of what OpenSSL queued may reach it
+		char[512] discard;
+		while (self.out_pending() > 0 && self.take_out(&discard) > 0) {}
+		return self.fail(PIN_MISMATCH)~;
+	}
 	if (r == 1)
 	{
-		// a configured pin must match the peer certificate before any data flows
-		if (self.ctx.pin_sha256.len > 0)
-		{
-			char[32] digest;
-			if (!self.peer_digest(&digest) || ossl::crypto_memcmp(digest[..].ptr, self.ctx.pin_sha256.ptr, 32) != 0)
-			{
-				// OpenSSL has already queued our last flight (Finished, and the client certificate with mutual TLS): the
-				// peer must not receive any of it, since it is not the one we pinned
-				char[512] discard;
-				while (self.out_pending() > 0 && self.take_out(&discard) > 0) {}
-				return self.fail(PIN_MISMATCH)~;
-			}
-		}
+		if (self.ctx.pin_sha256.len > 0 && !self.pin_checked) return self.fail(PIN_MISMATCH)~; // no certificate to compare
 		self.handshake_done = true;
 		return true;
 	}
@@ -424,4 +422,14 @@ fn String Conn.version_name(&self)
 {
 	if (!self.ssl) return "";
 	return ((ZString)ossl::ssl_get_version(self.ssl)).str_view();
+}
+
+// True when a pin is configured, the peer certificate is available and differs from it. The comparison happens once.
+fn bool Conn.pin_mismatch(&self)
+{
+	if (self.ctx.pin_sha256.len == 0 || self.pin_checked) return false;
+	char[32] digest;
+	if (!self.peer_digest(&digest)) return false; // not received yet
+	self.pin_checked = true;
+	return ossl::crypto_memcmp(digest[..].ptr, self.ctx.pin_sha256.ptr, 32) != 0;
 }
