@@ -56,6 +56,19 @@ A fault from `write` on a `TlsTransport` is final: part of the data may have bee
 continue after a gap, so every later call reports the same fault and the connection has to be made again.
 A `read` that times out can simply be called again.
 
+### TLS server and the `tlsc` tool
+
+`tls::accept(&ctx, &tcp, timeout)` is the server counterpart of `connect`: it runs the handshake on an accepted
+connection and returns a `TlsTransport`. Build a server `Context` with `tls::new_server_context` (certificate chain, key,
+optionally `client_ca_file` to demand a client certificate, and `alpn` to offer protocols). `Conn.requested_name()`
+tells which name the client sent.
+
+`c3c build tlsc` builds a small tool. For now it runs an echo server, one connection at a time:
+
+```
+build/tlsc --listen 8443 --cert server.pem --key server.key [--client-ca ca.pem] [--alpn h2,http/1.1] [--tls12] [--verbose]
+```
+
 The tests in `src/test` that talk to real peers need `tests/pki/make-pki.sh`
 and `python3 -I tests/peer/run.py start` first (`stop` afterwards); without them
 those tests print `SKIP` and pass.
