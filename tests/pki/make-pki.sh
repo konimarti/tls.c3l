@@ -79,7 +79,8 @@ openssl req -x509 -new -key "$OUT/selfsigned.key" -subj "/CN=localhost" -days 36
   -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" -addext "basicConstraints=CA:FALSE" -out "$OUT/selfsigned.pem"
 
 # ---- certificate policy
-leaf no-eku ec "/CN=localhost" "$(base_ext "$SAN" none)" ca
+# an extended key usage that does not include serverAuth (a certificate without the extension may be used for anything)
+leaf wrong-eku ec "/CN=localhost" "$(base_ext "$SAN" clientAuth)" ca
 # an intermediate that is not a CA, and a leaf below it
 genkey ec "$OUT/bad-intermediate.key"
 openssl req -new -key "$OUT/bad-intermediate.key" -subj "/CN=not a CA" -out "$OUT/bad-intermediate.csr"
