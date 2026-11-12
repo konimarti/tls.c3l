@@ -64,10 +64,25 @@ NEGATIVE = {
 }
 for _n, (_c, _e, _x) in NEGATIVE.items():
     SCENARIOS[_n] = (_c, _e)
+# Resumption peers: tickets (default), and session ids only (-no_ticket)
+NEGATIVE_EXTRA = {
+    "resume13": ("server", ["-tls1_3", "-www"]),
+    "resume12": ("server", ["-tls1_2", "-www"]),
+    "resume12id": ("server", ["-tls1_2", "-www", "-no_ticket"]),
+}
+SCENARIOS.update(NEGATIVE_EXTRA)
+# Peers without -www read commands from a pipe the harness keeps open: a line of text is sent to the client, "r" asks
+# for a renegotiation (TLS 1.2), "K" for a key update with a reply request (TLS 1.3). The pipe is tests/peer/out/NAME.cmd.
+INTERACTIVE = {
+    "reneg": ("server", ["-tls1_2", "-msg"]),
+    "keyupdate": ("server", ["-tls1_3", "-msg"]),
+}
+SCENARIOS.update(INTERACTIVE)
 CONFS = {LEGACY: ("openssl-legacy.cnf", "MinProtocol = TLSv1\nCipherString = DEFAULT:@SECLEVEL=0\n")}
 # peers written in Python: raw TCP or the ssl module, each behaves in one specific way
 PYTHON_PEERS = ["silent", "garbage", "echo12", "dropper", "closer", "sni"]  # sni also echoes (TLS 1.3)
-DEFAULT = ["tls13", "tls12", "rsa13", "rsa12", "rev13", "ip", "trace13"] + PYTHON_PEERS + list(NEGATIVE)
+DEFAULT = (["tls13", "tls12", "rsa13", "rsa12", "rev13", "ip", "trace13"] + PYTHON_PEERS + list(NEGATIVE)
+           + list(NEGATIVE_EXTRA) + list(INTERACTIVE))
 
 
 def free_port():
@@ -155,10 +170,21 @@ def start(names):
                 peer_env = dict(env, OPENSSL_CONF=os.path.join(OUT, CONFS[conf][0])) if conf else env
                 extra = [os.path.join(PKI, "ca.pem") if a == "@CA" else a.replace("@PKI", PKI) for a in extra]
                 cert_file, key_file = cert.split(":") if ":" in cert else (cert + ".pem", cert + ".key")
-                cmd = (["stdbuf", "-oL", "-eL"] if shutil.which("stdbuf") else []) + ["openssl", "s_server", "-quiet",
+                # commands on stdin only work without -quiet; the pipe never ends, so -ign_eof is not needed
+                quiet = [] if name in INTERACTIVE else ["-quiet"]
+                cmd = (["stdbuf", "-oL", "-eL"] if shutil.which("stdbuf") else []) + ["openssl", "s_server"] + quiet + [
                        "-accept", "127.0.0.1:%d" % port, "-cert", os.path.join(PKI, cert_file),
                        "-key", os.path.join(PKI, key_file)] + extra
-            proc = subprocess.Popen(cmd, env=peer_env if name not in PYTHON_PEERS else env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+            stdin = subprocess.DEVNULL
+            if name in INTERACTIVE:
+                fifo = os.path.join(OUT, name + ".cmd")
+                if os.path.exists(fifo):
+                    os.remove(fifo)
+                os.mkfifo(fifo)
+                # read-write: the peer itself holds a writer, so the pipe never reports end of input
+                stdin = os.open(fifo, os.O_RDWR)
+                lines.append("CMD_%s=%s" % (name, fifo))
+            proc = subprocess.Popen(cmd, env=peer_env if name not in PYTHON_PEERS else env, stdin=stdin, stdout=log, stderr=subprocess.STDOUT,
                                     start_new_session=True)
             pids.append(proc.pid)
             with open(PIDFILE, "w") as f:
