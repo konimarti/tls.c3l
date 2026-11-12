@@ -2,7 +2,7 @@
 module tls;
 import tls::ossl;
 import tls::wire;
-import std::io;
+import std::io, std::hash::sha256;
 
 // Used as the passphrase of every private key: a non-NULL value stops OpenSSL's default callback from asking on the
 // terminal, so an encrypted key fails to load instead of blocking.
@@ -200,6 +200,7 @@ struct Conn
 	bool close_notify_received;
 	bool close_notify_sent;
 	bool pin_checked;            // the configured pin has been compared with the peer certificate
+	char[32] name_hash;          // SHA-256 of the name this connection verifies; sessions are bound to it
 	bool failed;                 // sticky: every later call returns the stored fault
 	fault failure;
 	char last_alert;             // code of the last received fatal alert, 0 = none
@@ -241,6 +242,7 @@ fn Conn? Context.new_client_conn(&self, String server_name, Allocator allocator 
 			if (ossl::x509_verify_param_set1_ip_asc(ossl::ssl_get0_param(ssl), zname) != 1) return ossl_fail(CONFIG_INVALID)~;
 		}
 	}
+	conn.name_hash = sha256::hash(server_name.len > 0 ? plan.name : "");
 	return conn;
 }
 
@@ -472,4 +474,57 @@ fn char[]? Conn.peer_cert_der(&self, Allocator allocator = mem)
 		return ossl_fail(OPENSSL_ERROR)~;
 	}
 	return der;
+}
+
+// The session of this connection as a blob for a later connection to the same server: SHA-256 of the verified name
+// (32 bytes) followed by the DER session. It holds the session's secrets: treat it like a key, keep it only as long as
+// needed and wipe it (wipe_session) when done. A TLS 1.3 session only exists once the server's ticket has been read, so
+// read from the connection before exporting; before that this is SESSION_INVALID. Needs ClientConfig.session_cache.
+fn char[]? Conn.export_session(&self, Allocator allocator = mem)
+{
+	if (!self.ctx.session_cache || self.server) return CONFIG_INVALID~;
+	if (!self.handshake_done) return NOT_CONNECTED~;
+	defer ossl::err_clear_error();
+	ossl::SslSession* sess = ossl::ssl_get1_session(self.ssl);
+	if (!sess) return SESSION_INVALID~;
+	defer ossl::ssl_session_free(sess);
+	if (ossl::ssl_session_is_resumable(sess) != 1) return SESSION_INVALID~;
+	CInt size = ossl::i2d_ssl_session(sess, null);
+	if (size <= 0) return SESSION_INVALID~;
+	char[] blob = alloc::alloc_array_try(allocator, char, (sz)(32 + size))!;
+	blob[:32][..] = self.name_hash[..];
+	char* at = blob.ptr + 32;
+	if (ossl::i2d_ssl_session(sess, &at) != size)
+	{
+		wipe_session(blob);
+		alloc::free(allocator, blob.ptr);
+		return SESSION_INVALID~;
+	}
+	return blob;
+}
+
+// Offers a session from export_session to the server. Only before the handshake has started, and only for a connection
+// to the same name that it was exported from. A server that no longer knows the session simply gets a full handshake:
+// check session_reused() afterwards if that matters.
+fn void? Conn.import_session(&self, char[] blob)
+{
+	if (!self.ctx.session_cache || self.server || self.handshake_done) return CONFIG_INVALID~;
+	if (blob.len <= 32) return SESSION_INVALID~;
+	// bound to the name: a session from another server must not silently turn into a handshake in another context
+	if (ossl::crypto_memcmp(blob.ptr, &self.name_hash, 32) != 0) return SESSION_INVALID~;
+	defer ossl::err_clear_error();
+	char* at = blob.ptr + 32;
+	ossl::SslSession* sess = ossl::d2i_ssl_session(null, &at, (CLong)(blob.len - 32));
+	if (!sess) return SESSION_INVALID~;
+	defer ossl::ssl_session_free(sess);
+	if (ossl::ssl_set_session(self.ssl, sess) != 1) return SESSION_INVALID~;
+}
+
+// True when the handshake resumed an earlier session instead of doing a full one.
+fn bool Conn.session_reused(&self) => self.ssl && ossl::ssl_session_reused(self.ssl) == 1;
+
+// Overwrites a blob from export_session with zeros in a way the compiler cannot drop.
+fn void wipe_session(char[] blob)
+{
+	if (blob.len > 0) ossl::openssl_cleanse(blob.ptr, blob.len);
 }

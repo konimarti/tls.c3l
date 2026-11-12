@@ -108,6 +108,7 @@ extern fn void ssl_get0_alpn_selected(Ssl* s, char** data, CUInt* len) @cname("S
 extern fn CInt ssl_session_reused(Ssl* s) @cname("SSL_session_reused");
 extern fn SslSession* ssl_get1_session(Ssl* s) @cname("SSL_get1_session");
 extern fn CInt ssl_set_session(Ssl* s, SslSession* sess) @cname("SSL_set_session");
+extern fn CInt ssl_session_is_resumable(SslSession* sess) @cname("SSL_SESSION_is_resumable");
 extern fn void ssl_session_free(SslSession* sess) @cname("SSL_SESSION_free");
 extern fn CInt i2d_ssl_session(SslSession* s, char** pp) @cname("i2d_SSL_SESSION");
 extern fn SslSession* d2i_ssl_session(SslSession** a, char** pp, CLong length) @cname("d2i_SSL_SESSION");
