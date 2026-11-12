@@ -342,3 +342,19 @@ fn void test_peer_groups_restricted_to_one_curve() @test
 	}
 	assert(after > hybrid);
 }
+
+fn void test_peer_required_alpn_failure_ends_with_close_notify() @test
+{
+	if (!peer_support::peers_ready()) return;
+	// this peer prints what it receives and does not do ALPN
+	usz before = peer_neg_test::alerts_from_client("keyupdate", "warning close_notify");
+	ClientConfig cfg = with_ca();
+	cfg.alpn = { "h2" };
+	cfg.require_alpn = true;
+	Session s;
+	{
+		defer s.close();
+		assert(@catch(s.open("keyupdate", cfg, "localhost")) == tls::ALPN_MISMATCH);
+	}
+	assert(peer_neg_test::wait_for_client_alert("keyupdate", "warning close_notify", before), "the peer saw no close_notify");
+}

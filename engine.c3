@@ -338,7 +338,13 @@ fn bool? Conn.handshake(&self)
 	if (r == 1)
 	{
 		if (self.ctx.pin_sha256.len > 0 && !self.pin_checked) return self.fail(PIN_MISMATCH)~; // no certificate to compare
-		if (self.ctx.require_alpn && self.ctx.has_alpn && self.alpn_selected().len == 0) return self.fail(ALPN_MISMATCH)~;
+		if (self.ctx.require_alpn && self.ctx.has_alpn && self.alpn_selected().len == 0)
+		{
+			// the handshake is complete for OpenSSL and for the server: say that we are leaving, instead of vanishing
+			ossl::ssl_shutdown(self.ssl);
+			self.close_notify_sent = true;
+			return self.fail(ALPN_MISMATCH)~;
+		}
 		self.handshake_done = true;
 		return true;
 	}
