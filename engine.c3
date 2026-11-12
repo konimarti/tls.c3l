@@ -312,6 +312,7 @@ fn bool? Conn.handshake(&self)
 {
 	if (self.failed) return self.failure~;
 	if (self.handshake_done) return true;
+	if (self.close_notify_sent) return CLOSED~; // closed before the handshake finished: do not start one
 	ossl::err_clear_error();
 	CInt r = ossl::ssl_do_handshake(self.ssl);
 	if (r == 1)

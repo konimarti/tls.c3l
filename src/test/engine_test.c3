@@ -506,3 +506,20 @@ fn void test_engine_ca_settings_are_checked_in_every_mode() @test
 	defer ctx.free();
 	assert(!ctx.system_roots_loaded);
 }
+
+fn void test_engine_close_before_the_handshake_prevents_it() @test
+{
+	Context ctx = client_ctx({});
+	defer ctx.free();
+	Conn c = ctx.new_client_conn("example.com")!!;
+	defer c.free();
+	c.close_notify()!!;
+	assert(@catch(c.handshake()) == tls::CLOSED);
+	assert(c.out_pending() == 0); // no ClientHello after the close
+	// a connection that already started keeps what it sent, but does not continue
+	Conn d = ctx.new_client_conn("example.com")!!;
+	defer d.free();
+	assert(!d.handshake()!!);
+	d.close_notify()!!;
+	assert(@catch(d.handshake()) == tls::CLOSED);
+}
