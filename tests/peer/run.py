@@ -55,6 +55,10 @@ NEGATIVE = {
     "weakkey": ("rsa1024", ["-www", "-msg"] + LOW, None),
     "sha1sig": ("sha1-signed", ["-www", "-msg"] + LOW, None),
     "tls11": ("server", ["-tls1_1", "-www", "-msg"] + LOW, LEGACY),
+    # offers h2 and http/1.1 and prints what the client sent (-trace shows the offered ALPN names)
+    "alpn": ("server", ["-www", "-trace", "-alpn", "h2,http/1.1"], None),
+    # alt.test gets another certificate: it can only verify if the client sent the name
+    "sni2": ("server", ["-www", "-cert2", "@PKI/alt.pem", "-key2", "@PKI/alt.key", "-servername", "alt.test"], None),
     "mtls-wrongca": ("server", ["-tls1_3", "-www", "-msg", "-Verify", "1", "-verify_return_error", "-CAfile", "@CA"], None),
     "mtls12": ("server", ["-tls1_2", "-www", "-msg", "-Verify", "1", "-verify_return_error", "-CAfile", "@CA"], None),
 }
@@ -133,6 +137,12 @@ def start(names):
             f.write("openssl_conf = d\n[d]\nssl_conf = s\n[s]\nsystem_default = sd\n[sd]\n" + body)
     pids = []
     lines = ["CA=" + os.path.join(PKI, "ca.pem"), "DIR=" + PKI, "OUT=" + OUT]
+    # fingerprints computed independently of the library under test, for the pinning tests
+    import hashlib
+    for cert in ("server", "selfsigned"):
+        with open(os.path.join(PKI, cert + ".pem")) as f:
+            der = ssl.PEM_cert_to_DER_cert(f.read())
+        lines.append("SHA256_%s=%s" % (cert, hashlib.sha256(der).hexdigest()))
     try:
         for name in names:
             port = free_port()
