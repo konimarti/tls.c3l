@@ -651,3 +651,12 @@ fn String Conn.requested_name(&self)
 	char* name = (char*)ossl::ssl_get_servername(self.ssl, ossl::TLSEXT_NAMETYPE_HOST_NAME_TYPE);
 	return name ? ((ZString)name).str_view() : "";
 }
+
+// The negotiated cipher suite, e.g. "TLS_AES_256_GCM_SHA384" (empty before the handshake). Static OpenSSL string.
+fn String Conn.cipher_name(&self)
+{
+	if (!self.ssl) return "";
+	ossl::SslCipher* c = ossl::ssl_get_current_cipher(self.ssl);
+	if (!c) return "";
+	return ((ZString)ossl::ssl_cipher_get_name(c)).str_view();
+}
