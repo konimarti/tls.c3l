@@ -125,7 +125,9 @@ fn usz? TlsTransport.read(&self, char[] buf, Duration timeout) @dynamic
 			if (err == CLOSED) self.peer_closed = true;
 			return err~;
 		}
-		self.flush(timeout)!;
+		// plaintext that was already decrypted is never thrown away because the network refused our reply; the failure
+		// is remembered and the next call reports it
+		(void)self.flush(timeout);
 		return n;
 	}
 }
