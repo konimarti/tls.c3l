@@ -54,3 +54,25 @@ fn void test_adapter_failed_write_poisons_the_stream() @test
 	assert(@catch(r.t.read(&buf, 10 * time::MS)) == tls::TIMEOUT);
 	assert(r.end.text() == "first");
 }
+
+fn void test_adapter_handshake_timeout_is_a_total() @test
+{
+	if (!loopback::pki_ready()) return;
+	ServerEnd end;
+	end.open(loopback::server_cfg("server"));
+	defer end.release();
+	// the peer answers, but one byte per read and slowly: each wait is short, the sum is not
+	end.read_limit = 1;
+	end.read_delay_ms = 5;
+	Context cctx = tls::new_client_context(&&loopback::client_cfg())!!;
+	defer cctx.free();
+	TlsTransport*? t = tls::connect(&cctx, &end, "localhost", 150 * time::MS);
+	assert(@catch(t) == tls::TIMEOUT);
+	// without a limit the same peer gets through
+	ServerEnd patient;
+	patient.open(loopback::server_cfg("server"));
+	defer patient.release();
+	patient.read_limit = 64;
+	TlsTransport* ok = tls::connect(&cctx, &patient, "localhost")!!;
+	ok.free();
+}

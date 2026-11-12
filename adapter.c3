@@ -21,7 +21,8 @@ struct TlsTransport (Transport)
 	Allocator allocator;
 }
 
-// Client side: the handshake runs on `inner`. `timeout` bounds every wait for the network during it (not their sum).
+// Client side: the handshake runs on `inner` and must finish within `timeout` in total (zero = no limit): every wait
+// gets only what is left of it, so a peer that trickles data cannot keep the call open.
 // On failure nothing is closed: `inner` still belongs to the caller. On success it belongs to the result.
 fn TlsTransport*? connect(Context* ctx, Transport inner, String server_name, Duration timeout = time::DURATION_ZERO, Allocator allocator = mem)
 {
@@ -88,20 +89,31 @@ fn void? TlsTransport.pull(&self, Duration timeout)
 	if (self.conn.feed(self.inbuf[:n]) != n) return OPENSSL_ERROR~;
 }
 
+// What is left of a total allowance `total` that started at `started`. A total of zero or less means no limit.
+fn Duration? time_left(Clock started, Duration total)
+{
+	if (total <= time::DURATION_ZERO) return total;
+	Duration elapsed = started.to_now().to_duration();
+	if (elapsed >= total) return TIMEOUT~;
+	return total - elapsed;
+}
+
 fn void? TlsTransport.run_handshake(&self, Duration timeout)
 {
+	Clock started = clock::now();
 	while (true)
 	{
 		bool? done = self.conn.handshake();
 		if (catch err = done)
 		{
 			// a fatal alert may be waiting: the peer should hear it, but its failure to take it changes nothing
-			(void)self.flush(timeout);
+			Duration? left = time_left(started, timeout);
+			if (try d = left) (void)self.flush(d);
 			return err~;
 		}
-		self.flush(timeout)!;
+		self.flush(time_left(started, timeout)!)!;
 		if (done) return;
-		self.pull(timeout)!;
+		self.pull(time_left(started, timeout)!)!;
 	}
 }
 
