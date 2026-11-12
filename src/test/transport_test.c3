@@ -194,6 +194,22 @@ fn void test_mem_free_leaves_the_other_end_closed() @test
 	assert(ta.allocation_count() == 0);
 }
 
+fn void test_mem_inbox_does_not_grow_on_a_steady_stream() @test
+{
+	MemTransport a, b;
+	tls::mem_pair(&a, &b, mem);
+	defer a.free();
+	defer b.free();
+	char[10] buf;
+	for (int i = 0; i < 100; i++)
+	{
+		a.write("0123456789", time::DURATION_ZERO)!!;
+		assert(b.read(&buf, time::DURATION_ZERO)!! == 10);
+		assert(b.inbox.len() == 0);
+		assert(b.read_pos == 0);
+	}
+}
+
 fn void test_mem_conformance() @test
 {
 	MemTransport a, b;

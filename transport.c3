@@ -59,6 +59,12 @@ fn usz? MemTransport.read(&self, char[] buf, Duration timeout) @dynamic
 	usz n = avail < buf.len ? avail : buf.len;
 	buf[:n][..] = self.inbox.array_view()[self.read_pos:n][..];
 	self.read_pos += n;
+	if (self.read_pos == (usz)self.inbox.len())
+	{
+		// fully consumed: start over so a steady stream does not grow the buffer without bound
+		self.inbox.clear();
+		self.read_pos = 0;
+	}
 	return n;
 }
 
