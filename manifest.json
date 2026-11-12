@@ -48,14 +48,26 @@
       "linked-libraries": []
     },
     "macos-aarch64": {
-      "link-args": [],
+      "link-args": [
+        "-L/opt/homebrew/opt/openssl@3/lib",
+        "-Wl,-rpath,/opt/homebrew/opt/openssl@3/lib"
+      ],
       "dependencies": [],
-      "linked-libraries": []
+      "linked-libraries": [
+        "ssl",
+        "crypto"
+      ]
     },
     "macos-x64": {
-      "link-args": [],
+      "link-args": [
+        "-L/usr/local/opt/openssl@3/lib",
+        "-Wl,-rpath,/usr/local/opt/openssl@3/lib"
+      ],
       "dependencies": [],
-      "linked-libraries": []
+      "linked-libraries": [
+        "ssl",
+        "crypto"
+      ]
     },
     "netbsd-x64": {
       "link-args": [],
@@ -70,12 +82,18 @@
     "windows-aarch64": {
       "link-args": [],
       "dependencies": [],
-      "linked-libraries": []
+      "linked-libraries": [
+        "libssl",
+        "libcrypto"
+      ]
     },
     "windows-x64": {
       "link-args": [],
       "dependencies": [],
-      "linked-libraries": []
+      "linked-libraries": [
+        "libssl",
+        "libcrypto"
+      ]
     }
   }
 }
