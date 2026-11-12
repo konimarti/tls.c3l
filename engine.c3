@@ -48,21 +48,22 @@ fn Context? new_client_context(ClientConfig* cfg, Allocator allocator = mem)
 	ossl::ssl_ctx_set_verify(ctx, verifies_chain ? ossl::SSL_VERIFY_PEER : ossl::SSL_VERIFY_NONE, null);
 	ossl::ssl_ctx_set_verify_depth(ctx, cfg.max_chain_depth > 0 ? cfg.max_chain_depth : DEFAULT_CHAIN_DEPTH);
 
+	// A configured CA must load, whatever the mode: an unusable path is an error, never an empty store.
+	if (cfg.ca_file.len > 0 && ossl::ssl_ctx_load_verify_file(ctx, (char*)cfg.ca_file.zstr_tcopy()) != 1)
+	{
+		return ossl_fail(CA_LOAD_FAILED)~;
+	}
+	if (cfg.ca_dir.len > 0)
+	{
+		// the directory is read lazily by OpenSSL, so a missing one would only show up as an empty store later
+		if (!file::is_dir(cfg.ca_dir)) return ossl_fail(CA_LOAD_FAILED)~;
+		if (ossl::ssl_ctx_load_verify_dir(ctx, (char*)cfg.ca_dir.zstr_tcopy()) != 1) return ossl_fail(CA_LOAD_FAILED)~;
+	}
 	// Trust: a configured CA replaces the system store unless also_system_roots asks for both.
 	bool system_roots = false;
 	if (verifies_chain)
 	{
 		bool custom = cfg.ca_file.len > 0 || cfg.ca_dir.len > 0;
-		if (cfg.ca_file.len > 0 && ossl::ssl_ctx_load_verify_file(ctx, (char*)cfg.ca_file.zstr_tcopy()) != 1)
-		{
-			return ossl_fail(CA_LOAD_FAILED)~;
-		}
-		if (cfg.ca_dir.len > 0)
-		{
-			// the directory is read lazily by OpenSSL, so a missing one would only show up as an empty store later
-			if (!file::is_dir(cfg.ca_dir)) return ossl_fail(CA_LOAD_FAILED)~;
-			if (ossl::ssl_ctx_load_verify_dir(ctx, (char*)cfg.ca_dir.zstr_tcopy()) != 1) return ossl_fail(CA_LOAD_FAILED)~;
-		}
 		if (!custom || cfg.also_system_roots)
 		{
 			if (ossl::ssl_ctx_set_default_verify_paths(ctx) != 1) return ossl_fail(CA_LOAD_FAILED)~;

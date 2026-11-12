@@ -492,3 +492,17 @@ fn void test_engine_missing_ca_directory_is_an_error() @test
 	ClientConfig also = { .ca_dir = "/nonexistent-dir", .also_system_roots = true };
 	assert(@catch(tls::new_client_context(&also)) == tls::CA_LOAD_FAILED);
 }
+
+fn void test_engine_ca_settings_are_checked_in_every_mode() @test
+{
+	char[32] pin;
+	ClientConfig insecure = { .verify = INSECURE_NONE, .ca_file = "/nonexistent/ca.pem" };
+	assert(@catch(tls::new_client_context(&insecure)) == tls::CA_LOAD_FAILED);
+	ClientConfig pinned = { .verify = PINNED_ONLY, .pin_sha256 = pin[..], .ca_dir = "/nonexistent-dir" };
+	assert(@catch(tls::new_client_context(&pinned)) == tls::CA_LOAD_FAILED);
+	// a usable CA in those modes is accepted but does not turn on any system store
+	ClientConfig fine = { .verify = INSECURE_NONE, .ca_dir = "src/test/fixtures" };
+	Context ctx = tls::new_client_context(&fine)!!;
+	defer ctx.free();
+	assert(!ctx.system_roots_loaded);
+}
