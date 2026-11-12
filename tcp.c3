@@ -47,15 +47,19 @@ fn usz? TcpTransport.read(&self, char[] buf, Duration timeout) @dynamic
 {
 	if (self.closed) return CLOSED~;
 	if (buf.len == 0) return 0;
-	tcp_wait(self.sock.sock, ANY_READ, timeout)!;
-	sz? n = self.sock.read(buf);
-	if (catch err = n)
+	while (true)
 	{
-		if (is_peer_gone(err)) return CLOSED~;
-		return err~;
+		tcp_wait(self.sock.sock, ANY_READ, timeout)!;
+		sz? n = self.sock.read(buf);
+		if (catch err = n)
+		{
+			if (err == io::INTERRUPTED) continue; // a signal, not a result: wait again
+			if (is_peer_gone(err)) return CLOSED~;
+			return err~;
+		}
+		if (n == 0) return CLOSED~;
+		return (usz)n;
 	}
-	if (n == 0) return CLOSED~;
-	return (usz)n;
 }
 
 // One send() that never raises SIGPIPE where the platform lets us ask for that.
