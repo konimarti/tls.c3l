@@ -14,6 +14,9 @@ on:
 env:
   C3_VERSION: v0.8.6
 
+permissions:
+  contents: read
+
 jobs:
   build-linux:
     runs-on: ubuntu-latest
@@ -26,8 +29,10 @@ jobs:
 
       - name: Setup C3
         shell: bash
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
         run: |
-          VERSION="${{ github.event.inputs.version || env.C3_VERSION }}"
+          VERSION="${INPUT_VERSION:-$C3_VERSION}"
           mkdir -p /opt/c3
           wget -O /tmp/c3.tar.gz "https://github.com/c3lang/c3c/releases/download/${VERSION}/c3-linux.tar.gz"
           tar -xvzf /tmp/c3.tar.gz -C /opt/c3 --strip-components=1
@@ -51,6 +56,9 @@ jobs:
       - name: Server against openssl s_client
         run: python3 -I tests/peer/run.py serve-test
 
+      - name: Client tool against slow, dropping and silent servers
+        run: python3 -I tests/peer/run.py client-test
+
       - name: Run unit tests with AddressSanitizer
         run: python3 -I tests/peer/run.py run -- c3c test --sanitize=address
 
@@ -61,8 +69,10 @@ jobs:
 
       - name: Setup C3
         shell: bash
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
         run: |
-          VERSION="${{ github.event.inputs.version || env.C3_VERSION }}"
+          VERSION="${INPUT_VERSION:-$C3_VERSION}"
           mkdir -p /tmp/c3
           curl -L -o /tmp/c3.zip "https://github.com/c3lang/c3c/releases/download/${VERSION}/c3-macos.zip"
           unzip -q /tmp/c3.zip -d /tmp/c3
@@ -80,9 +90,17 @@ jobs:
           json.dump(p, open("project.json", "w"), indent=2)
           PY
 
-      # the peer tests need OpenSSL's command line (macOS ships LibreSSL's): they skip here until a job puts
-      # /opt/homebrew/opt/openssl@3/bin first in PATH and runs the peer harness as on Linux
+      # Homebrew's openssl command line (macOS ships LibreSSL's) makes the test certificates; the loopback tests then
+      # run and a missing certificate fails them. The peer tests still skip here (no peer harness on this job yet).
+      - name: Generate the test certificates
+        run: |
+          export PATH="/opt/homebrew/opt/openssl@3/bin:$PATH"
+          openssl version
+          bash tests/pki/make-pki.sh
+
       - name: Unit tests
+        env:
+          TLS_REQUIRE_PKI: "1"
         run: c3c test
 
       - name: Build the tool
@@ -95,8 +113,10 @@ jobs:
 
       - name: Setup C3
         shell: pwsh
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
         run: |
-          $version = "${{ github.event.inputs.version || env.C3_VERSION }}"
+          $version = if ($env:INPUT_VERSION) { $env:INPUT_VERSION } else { $env:C3_VERSION }
           Invoke-WebRequest -Uri "https://github.com/c3lang/c3c/releases/download/$version/c3-windows.zip" -OutFile c3.zip
           Expand-Archive c3.zip -DestinationPath C:\c3
           $dir = (Get-ChildItem -Path C:\c3 -Recurse -Filter c3c.exe | Select-Object -First 1).DirectoryName
