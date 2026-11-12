@@ -3,6 +3,7 @@
 	"version": "0.1.0",
 	"output": "build",
 	"sources": [ "./*", "src/test/**" ],
+	"link-args": [ "-l:libssl.so.3", "-l:libcrypto.so.3" ],
 	"targets": {
 		"tls": {
 			"type": "static-lib"
