@@ -2,7 +2,7 @@ module tls::peer_test;
 
 import tls;
 import tls::peer_support;
-import std::time;
+import std::time, std::thread;
 
 // A client context, the TCP connection and the TLS transport on top of it; closed in the right order.
 struct Session
@@ -209,4 +209,26 @@ fn void test_peer_transport_is_a_transport() @test
 	assert(generic.read(&buf, 5 * time::SEC)!! > 0);
 	char[4] none;
 	assert(generic.read(none[:0], 1 * time::SEC)!! == 0);
+}
+
+fn void test_peer_sees_the_server_name_on_the_wire() @test
+{
+	if (!peer_support::peers_ready()) return;
+	// this peer prints every message it receives: the name has to be in the ClientHello itself, not only checked locally
+	usz before = peer_support::log_count("trace13", "test.examp");
+	Session s;
+	{
+		defer s.close();
+		s.open("trace13", trusting_the_test_ca(), "test.example")!!;
+		s.t.write("GET / HTTP/1.0\r\n\r\n", 5 * time::SEC)!!;
+		char[16] buf;
+		s.t.read(&buf, 5 * time::SEC)!!;
+	}
+	usz after = before;
+	for (int i = 0; i < 40 && after == before; i++)
+	{
+		thread::sleep_ms(50)!!;
+		after = peer_support::log_count("trace13", "test.examp");
+	}
+	assert(after > before, "name seen %d times before, %d after", before, after);
 }

@@ -44,3 +44,14 @@ fn int peer_port(String scenario)
 }
 
 fn String ca_file() => state_value("CA");
+
+// How many times `needle` occurs in the log file the peer of `scenario` writes.
+fn usz log_count(String scenario, String needle)
+{
+	String path = state_value("OUT").tconcat("/").tconcat(scenario).tconcat(".log");
+	if (!file::is_file(path)) return 0;
+	String text = (String)file::load_temp(path)!!;
+	usz count = 0;
+	foreach (part : text.tsplit(needle)) count++;
+	return count - 1;
+}

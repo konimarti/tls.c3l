@@ -8,6 +8,7 @@
 The C3 tests read tests/peer/out/state.txt (KEY=value lines). Standard library only.
 """
 import os
+import shutil
 import signal
 import socket
 import subprocess
@@ -29,8 +30,10 @@ SCENARIOS = {
     "rsa12": ("server-rsa", ["-tls1_2", "-www"]),
     "rev13": ("server", ["-tls1_3", "-rev"]),
     "ip": ("ip-only", ["-www"]),
+    # prints the messages it receives, so a test can read what the client really sent
+    "trace13": ("server", ["-tls1_3", "-www", "-trace"]),
 }
-DEFAULT = ["tls13", "tls12", "rsa13", "rsa12", "rev13", "ip"]
+DEFAULT = ["tls13", "tls12", "rsa13", "rsa12", "rev13", "ip", "trace13"]
 
 
 def free_port():
@@ -96,13 +99,13 @@ def start(names):
     os.makedirs(OUT, exist_ok=True)
     env = dict(os.environ, OPENSSL_CONF=os.path.join(PKI, "openssl-test.cnf"))
     pids = []
-    lines = ["CA=" + os.path.join(PKI, "ca.pem"), "DIR=" + PKI]
+    lines = ["CA=" + os.path.join(PKI, "ca.pem"), "DIR=" + PKI, "OUT=" + OUT]
     try:
         for name in names:
             cert, extra = SCENARIOS[name]
             port = free_port()
             log = open(os.path.join(OUT, name + ".log"), "wb")
-            cmd = ["openssl", "s_server", "-quiet", "-accept", "127.0.0.1:%d" % port,
+            cmd = (["stdbuf", "-oL", "-eL"] if shutil.which("stdbuf") else []) + ["openssl", "s_server", "-quiet", "-accept", "127.0.0.1:%d" % port,
                    "-cert", os.path.join(PKI, cert + ".pem"), "-key", os.path.join(PKI, cert + ".key")] + extra
             proc = subprocess.Popen(cmd, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                                     start_new_session=True)
