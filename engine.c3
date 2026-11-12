@@ -2,6 +2,7 @@
 module tls;
 import tls::ossl;
 import tls::wire;
+import std::io;
 
 // Used as the passphrase of every private key: a non-NULL value stops OpenSSL's default callback from asking on the
 // terminal, so an encrypted key fails to load instead of blocking.
@@ -56,9 +57,11 @@ fn Context? new_client_context(ClientConfig* cfg, Allocator allocator = mem)
 		{
 			return ossl_fail(CA_LOAD_FAILED)~;
 		}
-		if (cfg.ca_dir.len > 0 && ossl::ssl_ctx_load_verify_dir(ctx, (char*)cfg.ca_dir.zstr_tcopy()) != 1)
+		if (cfg.ca_dir.len > 0)
 		{
-			return ossl_fail(CA_LOAD_FAILED)~;
+			// the directory is read lazily by OpenSSL, so a missing one would only show up as an empty store later
+			if (!file::is_dir(cfg.ca_dir)) return ossl_fail(CA_LOAD_FAILED)~;
+			if (ossl::ssl_ctx_load_verify_dir(ctx, (char*)cfg.ca_dir.zstr_tcopy()) != 1) return ossl_fail(CA_LOAD_FAILED)~;
 		}
 		if (!custom || cfg.also_system_roots)
 		{

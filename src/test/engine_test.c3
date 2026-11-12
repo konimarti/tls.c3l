@@ -480,3 +480,15 @@ fn void test_engine_failed_construction_releases_everything() @test
 	}
 	assert(!ta.has_leaks());
 }
+
+fn void test_engine_missing_ca_directory_is_an_error() @test
+{
+	ClientConfig missing = { .ca_dir = "/nonexistent-dir" };
+	assert(@catch(tls::new_client_context(&missing)) == tls::CA_LOAD_FAILED);
+	// a file where a directory is expected
+	ClientConfig not_a_dir = { .ca_dir = "src/test/fixtures/garbage.pem" };
+	assert(@catch(tls::new_client_context(&not_a_dir)) == tls::CA_LOAD_FAILED);
+	// the system store is not consulted as a fallback for a CA directory that cannot be used
+	ClientConfig also = { .ca_dir = "/nonexistent-dir", .also_system_roots = true };
+	assert(@catch(tls::new_client_context(&also)) == tls::CA_LOAD_FAILED);
+}
