@@ -27,4 +27,7 @@ faultdef
 	SESSION_INVALID,     // imported session blob rejected or bound to another server name
 	OPENSSL_ERROR,       // anything else from the error queue
 	OUT_OF_MEMORY,
-	LIBRARY_INIT_FAILED; // libssl missing, older than 3.0, or init failed
+	LIBRARY_INIT_FAILED, // libssl missing, older than 3.0, or init failed
+	TIMEOUT,             // Transport: nothing arrived / could be sent within the timeout
+	CLOSED;              // Transport: peer EOF, close() called, or (Conn.read/TlsTransport.read) close_notify received
+// A received close_notify is CLOSED; transport EOF without close_notify is TRUNCATED.
