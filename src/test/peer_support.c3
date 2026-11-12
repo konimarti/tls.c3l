@@ -55,3 +55,6 @@ fn usz log_count(String scenario, String needle)
 	foreach (part : text.tsplit(needle)) count++;
 	return count - 1;
 }
+
+// A file of the test PKI.
+fn String pki_file(String name) => state_value("DIR").tconcat("/").tconcat(name);
