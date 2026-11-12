@@ -221,9 +221,14 @@ fn ClientHelloInfo? parse_client_hello(char[] record, Allocator allocator)
 
 	info.legacy_version = r.u16()!;
 	r.take(32)!;                                // random
-	r.take(r.u8()!)!;                           // legacy_session_id
+	usz session_id_len = r.u8()!;               // legacy_session_id<0..32>
+	if (session_id_len > 32) return BAD_HANDSHAKE~;
+	r.take(session_id_len)!;
 	info.cipher_suites = read_u16_list(allocator, &r, r.u16()!)!;
-	r.take(r.u8()!)!;                           // legacy_compression_methods
+	if (info.cipher_suites.len == 0) return BAD_HANDSHAKE~; // cipher_suites<2..2^16-2>
+	usz compression_len = r.u8()!;              // legacy_compression_methods<1..2^8-1>
+	if (compression_len == 0) return BAD_HANDSHAKE~;
+	r.take(compression_len)!;
 	if (r.remaining() == 0) return info;        // no extensions (allowed by the grammar)
 	bool seen_sni, seen_groups, seen_versions, seen_alpn;
 

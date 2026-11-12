@@ -302,3 +302,41 @@ fn void test_hello_two_host_names_in_one_list_rejected() @test
 	ClientHelloInfo info = wire::parse_client_hello(build_hello(0x0303, { 0x1301 }, ext(0, mixed), true), tmem)!!;
 	assert(info.server_name == "a.test");
 }
+
+// A ClientHello body from raw pieces, to break single fixed fields.
+fn char[] hello_with(usz session_id_len, char[] suites_raw, char[] compression_raw)
+{
+	Buf body = buf_new();
+	body.u16(0x0303);
+	for (usz i = 0; i < 32; i++) body.u8(i);
+	body.u8(session_id_len);
+	for (usz i = 0; i < session_id_len; i++) body.u8(0xaa);
+	body.u16(suites_raw.len);
+	body.raw(suites_raw);
+	body.u8(compression_raw.len);
+	body.raw(compression_raw);
+	Buf hs = buf_new();
+	hs.u8(1);
+	hs.u8(0);
+	hs.u16(body.bytes().len);
+	hs.raw(body.bytes());
+	Buf rec = buf_new();
+	rec.u8(22);
+	rec.u16(0x0303);
+	rec.u16(hs.bytes().len);
+	rec.raw(hs.bytes());
+	return rec.bytes();
+}
+
+fn void test_hello_fixed_field_sizes_enforced() @test
+{
+	// the well-formed baseline parses
+	ClientHelloInfo ok = wire::parse_client_hello(hello_with(32, hx("13 01"), hx("00")), tmem)!!;
+	assert(ok.cipher_suites == (ushort[]){ 0x1301 });
+	// no cipher suites at all
+	assert(@catch(wire::parse_client_hello(hello_with(0, {}, hx("00")), tmem)) == wire::BAD_HANDSHAKE);
+	// no compression methods
+	assert(@catch(wire::parse_client_hello(hello_with(0, hx("13 01"), {}), tmem)) == wire::BAD_HANDSHAKE);
+	// session id longer than 32 bytes
+	assert(@catch(wire::parse_client_hello(hello_with(33, hx("13 01"), hx("00")), tmem)) == wire::BAD_HANDSHAKE);
+}
