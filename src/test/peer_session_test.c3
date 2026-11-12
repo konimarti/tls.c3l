@@ -441,3 +441,29 @@ fn void test_peer_session_cannot_be_offered_once_the_handshake_started() @test
 	// a valid blob, but too late: it would have no effect, and saying so is better than silently ignoring it
 	assert(@catch(c.import_session(blob)) == tls::CONFIG_INVALID);
 }
+
+fn void test_peer_session_is_bound_to_depth_groups_and_ciphers() @test
+{
+	if (!peer_support::peers_ready()) return;
+	char[] blob = session_under("resume13", cached(), "localhost");
+	defer
+	{
+		tls::wipe_session(blob);
+		free(blob);
+	}
+	ClientConfig shallow = cached();
+	shallow.max_chain_depth = 2;
+	ClientConfig narrow = cached();
+	narrow.groups = "P-256";
+	ClientConfig ciphers = cached();
+	ciphers.ciphersuites = "TLS_AES_128_GCM_SHA256";
+	ClientConfig[3] others = { shallow, narrow, ciphers };
+	foreach (cfg : others)
+	{
+		Context ctx = tls::new_client_context(&cfg)!!;
+		defer ctx.free();
+		Conn c = ctx.new_client_conn("localhost")!!;
+		defer c.free();
+		assert(@catch(c.import_session(blob)) == tls::SESSION_INVALID);
+	}
+}

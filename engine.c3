@@ -538,8 +538,9 @@ fn char[]? Conn.peer_cert_der(&self, Allocator allocator = mem)
 	return der;
 }
 
-// A 32-byte tag for everything that decides whether a peer was acceptable: verification mode, trust anchors, pin and
-// protocol versions. A session is only valid under the settings it was made with.
+// A 32-byte tag for everything that decides whether a peer was acceptable: verification mode, trust anchors, pin,
+// protocol versions, groups, cipher lists and the chain depth. A session is only valid under the settings it was made
+// with. The trust anchors enter by path, not by content: replacing the CA file at the same path does not retire sessions.
 fn char[32] session_tag(ClientConfig* cfg)
 {
 	Sha256 h;
@@ -555,6 +556,11 @@ fn char[32] session_tag(ClientConfig* cfg)
 	tag_field(&h, (char[])cfg.ca_file);
 	tag_field(&h, (char[])cfg.ca_dir);
 	tag_field(&h, cfg.pin_sha256);
+	tag_field(&h, (char[])cfg.groups);
+	tag_field(&h, (char[])cfg.cipher_list);
+	tag_field(&h, (char[])cfg.ciphersuites);
+	char[4] depth = { (char)(cfg.max_chain_depth >> 24), (char)(cfg.max_chain_depth >> 16), (char)(cfg.max_chain_depth >> 8), (char)cfg.max_chain_depth };
+	h.update(depth[..]);
 	return h.final();
 }
 
