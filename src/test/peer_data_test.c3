@@ -214,8 +214,9 @@ fn void test_peer_garbage_is_a_protocol_error() @test
 	Session s;
 	defer s.close();
 	fault f = @catch(s.open("garbage"));
-	// observed on OpenSSL 3.5.5: HTTP text where a ServerHello should be is a protocol error
-	assert(f == tls::PROTOCOL_ERROR, "fault %s", f);
+	// HTTP text where a ServerHello should be: OpenSSL 3.5 reports a malformed message, OpenSSL 3.0 a wrong version
+	// number (which maps to PROTOCOL_VERSION). Either is a protocol fault; what matters is no success, no timeout.
+	assert(f == tls::PROTOCOL_ERROR || f == tls::PROTOCOL_VERSION, "fault %s", f);
 	assert(s.t == null);
 	assert(!s.tcp.closed);
 }
