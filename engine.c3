@@ -9,6 +9,8 @@ import std::io;
 const char[1] NO_PASSPHRASE = { 0 };
 const String SESSION_ID_CONTEXT = "tls.c3l";
 
+// Connections keep a pointer to their Context (for the pin and the verification mode): the Context value must stay
+// where it is, and must not be freed, until every connection made from it has been freed.
 struct Context
 {
 	ossl::SslCtx* handle;
