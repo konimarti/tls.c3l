@@ -5,6 +5,7 @@
   python3 -I tests/peer/run.py stop                          kill every recorded peer
   python3 -I tests/peer/run.py run [--scenario NAME ...] -- CMD ...   start, run CMD, stop (for CI)
   python3 -I tests/peer/run.py serve NAME PORT               (internal) run one python peer in the foreground
+  python3 -I tests/peer/run.py serve-test                    our server (build/tlsc --listen) against openssl s_client and raw bytes
 
 The C3 tests read tests/peer/out/state.txt (KEY=value lines). Standard library only.
 """
@@ -284,6 +285,138 @@ def serve(name, port):
         threading.Thread(target=handle, args=(raw,), daemon=True).start()
 
 
+TLSC = os.path.join(ROOT, "build", "tlsc")
+V7 = bytes.fromhex("16030100540100005003030001020304050607 08090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+                   "000002c02b0100002500000 00b0009000006612e74657374000a00040002 0017000d000400020403000b00020100".replace(" ", ""))
+
+
+class Server:
+    """build/tlsc --listen on a free port; its stderr (--verbose) goes to a file."""
+
+    def __init__(self, tag, *args):
+        self.port = free_port()
+        self.err = os.path.join(OUT, "tlsc-%s.err" % tag)
+        self.errf = open(self.err, "wb")
+        self.proc = subprocess.Popen([TLSC, "--listen", str(self.port), "--cert", os.path.join(PKI, "server.pem"),
+                                      "--key", os.path.join(PKI, "server.key"), "--verbose"] + list(args),
+                                     stdout=subprocess.DEVNULL, stderr=self.errf, stdin=subprocess.DEVNULL)
+        if not wait_listening(self.port, self.proc):
+            raise RuntimeError("tlsc did not start, see " + self.err)
+
+    def log(self):
+        time.sleep(0.3)
+        with open(self.err, "rb") as f:
+            return f.read().decode(errors="replace")
+
+    def stop(self):
+        self.proc.terminate()
+        try:
+            self.proc.wait(5)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+        self.errf.close()
+
+
+def s_client(port, extra, payload=b"hello\n", quiet=True):
+    """openssl s_client sending a line and waiting a moment for the echo. Returns (exit code, output)."""
+    cmd = ["openssl", "s_client", "-connect", "127.0.0.1:%d" % port, "-servername", "localhost",
+           "-CAfile", os.path.join(PKI, "ca.pem"), "-verify_return_error"] + (["-quiet"] if quiet else []) + ["-no_ign_eof"] + extra
+    p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    try:
+        p.stdin.write(payload)
+        p.stdin.flush()
+        time.sleep(1.0)
+        p.stdin.close()
+        out = p.stdout.read()
+        p.wait(10)
+    except Exception:
+        p.kill()
+        raise
+    return p.returncode, out.decode(errors="replace")
+
+
+def raw_send(port, data, wait=1.0):
+    s = socket.create_connection(("127.0.0.1", port), timeout=5)
+    s.sendall(data)
+    time.sleep(0.2)
+    s.settimeout(wait)
+    try:
+        reply = s.recv(4096)
+    except (socket.timeout, OSError):
+        reply = b""
+    s.close()
+    return reply
+
+
+def serve_test():
+    if not os.path.exists(TLSC):
+        sys.stderr.write("build/tlsc is missing: run `c3c build tlsc` first\n")
+        return 2
+    subprocess.check_call(["bash", os.path.join(ROOT, "tests", "pki", "make-pki.sh")])
+    os.makedirs(OUT, exist_ok=True)
+    results = []
+
+    def check(name, ok, detail=""):
+        results.append(ok)
+        print("%s %s%s" % ("ok  " if ok else "FAIL", name, "" if ok else ": " + detail))
+
+    srv = Server("plain")
+    try:
+        rc, out = s_client(srv.port, [])
+        check("echo_13", rc == 0 and "hello" in out, "rc=%s out=%r" % (rc, out[-200:]))
+        rc, out = s_client(srv.port, ["-tls1_2"])
+        check("echo_12", rc == 0 and "hello" in out, "rc=%s out=%r" % (rc, out[-200:]))
+        log = srv.log()
+        check("sni_seen", "sni=localhost" in log and "TLSv1.3" in log and "TLSv1.2" in log, log)
+        rc, out = s_client(srv.port, ["-CAfile", os.path.join(PKI, "otherca.pem")])
+        check("wrong_ca_rejected_by_the_client", rc != 0 or "verify error" in out.lower(), "rc=%s out=%r" % (rc, out[-200:]))
+        # raw garbage: each connection ends, and the next real client is still served
+        vectors = {
+            "http_request": b"GET / HTTP/1.1\r\n\r\n",
+            "unknown_content_type": bytes.fromhex("630303000100"),
+            "record_too_long": bytes.fromhex("16030348010000000000000000 0000".replace(" ", "")),
+            "alert_of_one_byte": bytes.fromhex("150303000101"),
+            "ccs_first": bytes.fromhex("140303000101"),
+            "app_data_first": bytes.fromhex("170303000 1ff".replace(" ", "")),
+            "hello_version_two": V7[:9] + b"\x02\x00" + V7[11:],
+        }
+        survived = 0
+        for name, data in vectors.items():
+            raw_send(srv.port, data)
+            rc, out = s_client(srv.port, [])
+            ok = srv.proc.poll() is None and rc == 0 and "hello" in out
+            survived += 1 if ok else 0
+            if not ok:
+                print("FAIL malformed %s: the server did not survive (rc=%s)" % (name, rc))
+        print("malformed: %d/%d survived" % (survived, len(vectors)))
+        check("malformed", survived == len(vectors))
+        reply = raw_send(srv.port, V7)
+        check("server_hello_for_a_raw_hello", reply[:1] == b"\x16" and len(reply) > 5 and reply[5] == 2,
+              "reply starts %r" % reply[:8])
+    finally:
+        srv.stop()
+
+    srv = Server("mtls", "--client-ca", os.path.join(PKI, "ca.pem"))
+    try:
+        rc, out = s_client(srv.port, ["-cert", os.path.join(PKI, "client.pem"), "-key", os.path.join(PKI, "client.key")])
+        check("mtls_ok", rc == 0 and "hello" in out, "rc=%s out=%r" % (rc, out[-200:]))
+        rc, out = s_client(srv.port, [])
+        log = srv.log()
+        check("mtls_denied", "NO_PEER_CERT" in log and "client certificate sha256=" in log, log)
+    finally:
+        srv.stop()
+
+    srv = Server("alpn", "--alpn", "h2,http/1.1")
+    try:
+        rc, out = s_client(srv.port, ["-alpn", "http/1.1,h2"], quiet=False)
+        check("alpn_h2", "ALPN protocol: h2" in out, out[-300:])
+    finally:
+        srv.stop()
+    failed = results.count(False)
+    print("%d passed, %d failed" % (len(results) - failed, failed))
+    return 1 if failed else 0
+
+
 def main(argv):
     if not argv:
         sys.stderr.write(__doc__)
@@ -291,6 +424,8 @@ def main(argv):
     cmd, rest = argv[0], argv[1:]
     if cmd == "serve":
         return serve(rest[0], int(rest[1]))
+    if cmd == "serve-test":
+        return serve_test()
     names = []
     command = None
     if "--" in rest:
