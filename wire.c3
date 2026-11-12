@@ -116,3 +116,164 @@ fn char[]? encode_alpn(String[] protos, Allocator allocator)
 	}
 	return out;
 }
+
+// ---------------------------------------------------------------------------------------------
+// ClientHello (RFC 8446 4.1.2, extensions 4.2). Used to inspect what the engine sends.
+
+const ushort EXT_SERVER_NAME = 0;
+const ushort EXT_SUPPORTED_GROUPS = 10;
+const ushort EXT_ALPN = 16;
+const ushort EXT_SUPPORTED_VERSIONS = 43;
+
+struct ClientHelloInfo
+{
+	ushort legacy_version;
+	String server_name;          // empty when there is no SNI
+	String[] alpn;
+	ushort[] supported_versions; // empty when the extension is absent
+	ushort[] supported_groups;   // empty when the extension is absent
+	ushort[] cipher_suites;
+	Allocator allocator;
+}
+
+fn void ClientHelloInfo.free(&self)
+{
+	alloc::free(self.allocator, self.server_name.ptr);
+	foreach (a : self.alpn) alloc::free(self.allocator, a.ptr);
+	alloc::free(self.allocator, self.alpn.ptr);
+	alloc::free(self.allocator, self.supported_versions.ptr);
+	alloc::free(self.allocator, self.supported_groups.ptr);
+	alloc::free(self.allocator, self.cipher_suites.ptr);
+	*self = {};
+}
+
+// Bounds-checked big-endian reader: every overrun is BAD_HANDSHAKE.
+struct Reader
+{
+	char[] data;
+	usz pos;
+}
+
+fn usz Reader.remaining(&self) => self.data.len - self.pos;
+
+fn char? Reader.u8(&self)
+{
+	if (self.remaining() < 1) return BAD_HANDSHAKE~;
+	return self.data[self.pos++];
+}
+
+fn ushort? Reader.u16(&self)
+{
+	if (self.remaining() < 2) return BAD_HANDSHAKE~;
+	ushort v = (ushort)self.data[self.pos] << 8 | self.data[self.pos + 1];
+	self.pos += 2;
+	return v;
+}
+
+fn char[]? Reader.take(&self, usz n)
+{
+	if (self.remaining() < n) return BAD_HANDSHAKE~;
+	char[] s = self.data[self.pos:n];
+	self.pos += n;
+	return s;
+}
+
+fn String? dup_bytes(Allocator allocator, char[] src)
+{
+	if (src.len == 0) return (String){};
+	char[] copy = alloc::alloc_array_try(allocator, char, (sz)src.len)!;
+	copy[..] = src[..];
+	return (String)copy;
+}
+
+// A list of big-endian u16 values inside `r` that must fill `n` bytes exactly (n even).
+fn ushort[]? read_u16_list(Allocator allocator, Reader* r, usz n)
+{
+	if (n % 2 != 0) return BAD_HANDSHAKE~;
+	char[] raw = r.take(n)!;
+	usz count = n / 2;
+	if (count == 0) return (ushort[]){};
+	ushort[] out = alloc::alloc_array_try(allocator, ushort, (sz)count)!;
+	for (usz i = 0; i < count; i++) out[i] = (ushort)raw[2 * i] << 8 | raw[2 * i + 1];
+	return out;
+}
+
+// Input: one TLS record (header included) carrying a whole ClientHello. Bytes after the record are ignored.
+// SHORT_INPUT: the record is not complete. BAD_RECORD: bad record header. BAD_HANDSHAKE: not a handshake record,
+// not a ClientHello, a length that overruns or disagrees, or malformed fields.
+fn ClientHelloInfo? parse_client_hello(char[] record, Allocator allocator)
+{
+	RecordHeader rh = parse_record_header(record)!;
+	if (record.len < RECORD_HEADER_LEN + rh.length) return SHORT_INPUT~;
+	if (rh.type != ContentType.HANDSHAKE.wire) return BAD_HANDSHAKE~;
+	Reader rec = { .data = record[RECORD_HEADER_LEN:rh.length] };
+
+	if (rec.u8()! != 1) return BAD_HANDSHAKE~; // handshake type client_hello
+	usz hs_hi = rec.u8()!;
+	usz hs_mid = rec.u8()!;
+	usz hs_lo = rec.u8()!;
+	usz hs_len = hs_hi << 16 | hs_mid << 8 | hs_lo;
+	if (hs_len != rec.remaining()) return BAD_HANDSHAKE~;
+	Reader r = { .data = rec.take(hs_len)! };
+
+	ClientHelloInfo info = { .allocator = allocator };
+	defer catch info.free();
+
+	info.legacy_version = r.u16()!;
+	r.take(32)!;                                // random
+	r.take(r.u8()!)!;                           // legacy_session_id
+	info.cipher_suites = read_u16_list(allocator, &r, r.u16()!)!;
+	r.take(r.u8()!)!;                           // legacy_compression_methods
+	if (r.remaining() == 0) return info;        // no extensions (allowed by the grammar)
+
+	usz ext_total = r.u16()!;
+	if (ext_total != r.remaining()) return BAD_HANDSHAKE~;
+	while (r.remaining() > 0)
+	{
+		ushort ext_type = r.u16()!;
+		Reader ext = { .data = r.take(r.u16()!)! };
+		switch (ext_type)
+		{
+			case EXT_SERVER_NAME:
+				if (ext.remaining() == 0) return BAD_HANDSHAKE~;
+				Reader list = { .data = ext.take(ext.u16()!)! };
+				if (ext.remaining() != 0) return BAD_HANDSHAKE~;
+				while (list.remaining() > 0)
+				{
+					char name_type = list.u8()!;
+					char[] name = list.take(list.u16()!)!;
+					if (name_type == 0 && info.server_name.len == 0)
+					{
+						info.server_name = dup_bytes(allocator, name)!;
+					}
+				}
+			case EXT_SUPPORTED_GROUPS:
+				if (info.supported_groups.len > 0) return BAD_HANDSHAKE~;
+				info.supported_groups = read_u16_list(allocator, &ext, ext.u16()!)!;
+				if (ext.remaining() != 0) return BAD_HANDSHAKE~;
+			case EXT_SUPPORTED_VERSIONS:
+				if (info.supported_versions.len > 0) return BAD_HANDSHAKE~;
+				info.supported_versions = read_u16_list(allocator, &ext, ext.u8()!)!;
+				if (ext.remaining() != 0) return BAD_HANDSHAKE~;
+			case EXT_ALPN:
+				if (info.alpn.len > 0) return BAD_HANDSHAKE~;
+				Reader list = { .data = ext.take(ext.u16()!)! };
+				if (ext.remaining() != 0) return BAD_HANDSHAKE~;
+				usz count = 0;
+				Reader probe = list;
+				while (probe.remaining() > 0)
+				{
+					if (probe.take(probe.u8()!)!.len == 0) return BAD_HANDSHAKE~;
+					count++;
+				}
+				if (count == 0) return BAD_HANDSHAKE~;
+				String[] names = alloc::alloc_array_try(allocator, String, (sz)count)!;
+				foreach (&n : names) *n = (String){};
+				info.alpn = names;
+				foreach (&n : names) *n = dup_bytes(allocator, list.take(list.u8()!)!)!;
+			default:
+				break;
+		}
+	}
+	return info;
+}
