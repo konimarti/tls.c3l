@@ -69,7 +69,12 @@ fn Context? new_client_context(ClientConfig* cfg, Allocator allocator = mem)
 		bool custom = cfg.ca_file.len > 0 || cfg.ca_dir.len > 0;
 		if (!custom || cfg.also_system_roots)
 		{
+$if env::WIN32:
+			// OpenSSL has no certificate directory on Windows: use the system store through its store URI (3.2 and later)
+			if (ossl::ssl_ctx_load_verify_store(ctx, "org.openssl.winstore://") != 1) return ossl_fail(CA_LOAD_FAILED)~;
+$else
 			if (ossl::ssl_ctx_set_default_verify_paths(ctx) != 1) return ossl_fail(CA_LOAD_FAILED)~;
+$endif
 			system_roots = true;
 		}
 	}
@@ -331,6 +336,7 @@ fn bool? Conn.handshake(&self)
 	if (r == 1)
 	{
 		if (self.ctx.pin_sha256.len > 0 && !self.pin_checked) return self.fail(PIN_MISMATCH)~; // no certificate to compare
+		if (self.ctx.require_alpn && self.ctx.has_alpn && self.alpn_selected().len == 0) return self.fail(ALPN_MISMATCH)~;
 		self.handshake_done = true;
 		return true;
 	}
@@ -437,4 +443,33 @@ fn bool Conn.pin_mismatch(&self)
 	if (!self.peer_digest(&digest)) return false; // not received yet
 	self.pin_checked = true;
 	return ossl::crypto_memcmp(digest[..].ptr, self.ctx.pin_sha256.ptr, 32) != 0;
+}
+
+// The protocol the server picked through ALPN, empty when none. The bytes belong to OpenSSL and stay valid until the
+// connection is freed.
+fn String Conn.alpn_selected(&self)
+{
+	char* data = null;
+	CUInt len = 0;
+	ossl::ssl_get0_alpn_selected(self.ssl, &data, &len);
+	if (data == null || len == 0) return "";
+	return (String)data[:len];
+}
+
+// The peer certificate in DER form (a copy owned by the caller). NO_PEER_CERT when there is none.
+fn char[]? Conn.peer_cert_der(&self, Allocator allocator = mem)
+{
+	ossl::X509Cert* cert = ossl::ssl_get1_peer_certificate(self.ssl);
+	if (!cert) return NO_PEER_CERT~;
+	defer ossl::x509_free(cert);
+	CInt size = ossl::i2d_x509(cert, null);
+	if (size <= 0) return ossl_fail(OPENSSL_ERROR)~;
+	char[] der = alloc::alloc_array_try(allocator, char, (sz)size)!;
+	char* at = der.ptr;
+	if (ossl::i2d_x509(cert, &at) != size)
+	{
+		alloc::free(allocator, der.ptr);
+		return ossl_fail(OPENSSL_ERROR)~;
+	}
+	return der;
 }
