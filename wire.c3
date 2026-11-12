@@ -96,6 +96,17 @@ fn String alert_name(char description)
 // RFC 7301 3.1: concatenated names, each with a 1-byte length prefix, as SSL_CTX_set_alpn_protos wants it.
 // Each name must be 1..255 bytes and the total at most 65535, else BAD_ALPN.
 // An empty list returns an empty slice (no ALPN: the caller skips the call).
+fn void? validate_alpn(String[] protos)
+{
+	usz total = 0;
+	foreach (p : protos)
+	{
+		if (p.len == 0 || p.len > 255) return BAD_ALPN~;
+		total += 1 + p.len;
+		if (total > 65535) return BAD_ALPN~;
+	}
+}
+
 fn char[]? encode_alpn(String[] protos, Allocator allocator)
 {
 	usz total = 0;

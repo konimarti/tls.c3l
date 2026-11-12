@@ -47,6 +47,7 @@ struct ServerConfig
 	String cert_file;             // PEM chain, leaf first, required
 	String key_file;              // PEM, unencrypted, required
 	String client_ca_file;        // non-empty: request and require a client certificate from these CAs
+	String[] alpn;                // protocols offered, most preferred first; a client with none in common is not told of any
 	String groups;
 	int max_chain_depth;
 }
@@ -176,7 +177,7 @@ fn void? ClientConfig.validate(&self)
 	if (self.min_wire() > self.max_wire()) return CONFIG_INVALID~;
 	if (self.max_chain_depth < 0) return CONFIG_INVALID~;
 	// an empty or oversized protocol name is a bad ALPN list
-	if (catch err = wire::encode_alpn(self.alpn, tmem)) return CONFIG_INVALID~;
+	if (catch err = wire::validate_alpn(self.alpn)) return CONFIG_INVALID~;
 }
 
 fn int ServerConfig.min_wire(&self) => self.min_version == DEFAULT ? Version.TLS_1_2.wire : self.min_version.wire;
@@ -185,6 +186,7 @@ fn int ServerConfig.max_wire(&self) => self.max_version == DEFAULT ? Version.TLS
 fn void? ServerConfig.validate(&self)
 {
 	if (self.cert_file.len == 0 || self.key_file.len == 0) return CONFIG_INVALID~;
+	if (catch err = wire::validate_alpn(self.alpn)) return CONFIG_INVALID~;
 	if (self.min_wire() > self.max_wire()) return CONFIG_INVALID~;
 	if (self.max_chain_depth < 0) return CONFIG_INVALID~;
 }

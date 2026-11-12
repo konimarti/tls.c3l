@@ -34,6 +34,25 @@ fn TlsTransport*? connect(Context* ctx, Transport inner, String server_name, Dur
 		t.free();
 		return err~;
 	}
+	return finish_handshake(t, conn, timeout);
+}
+
+// Server side: the same, for a connection that was accepted. A client certificate demanded by the context that does
+// not come is NO_PEER_CERT.
+fn TlsTransport*? accept(Context* ctx, Transport inner, Duration timeout = time::DURATION_ZERO, Allocator allocator = mem)
+{
+	TlsTransport* t = new_transport(ctx, inner, allocator)!;
+	Conn? conn = ctx.new_server_conn(allocator);
+	if (catch err = conn)
+	{
+		t.free();
+		return err~;
+	}
+	return finish_handshake(t, conn, timeout);
+}
+
+fn TlsTransport*? finish_handshake(TlsTransport* t, Conn conn, Duration timeout)
+{
 	t.conn = conn;
 	if (catch err = t.run_handshake(timeout))
 	{

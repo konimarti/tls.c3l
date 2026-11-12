@@ -4,6 +4,19 @@ import tls::ossl;
 import tls::wire;
 import std::io, std::hash::sha256;
 
+// Room for a path or host name handed to OpenSSL as a C string. Nothing here uses the temp allocator: that one only
+// exists on the main thread unless the caller sets it up, and connections are made from worker threads too.
+const usz PATH_BUFFER = 4096;
+
+// `s` as a NUL-terminated string in `buf`; CONFIG_INVALID when it does not fit.
+fn char*? cstr(String s, char[] buf)
+{
+	if (s.len >= buf.len) return CONFIG_INVALID~;
+	buf[:s.len][..] = ((char[])s)[..];
+	buf[s.len] = 0;
+	return buf.ptr;
+}
+
 // Used as the passphrase of every private key: a non-NULL value stops OpenSSL's default callback from asking on the
 // terminal, so an encrypted key fails to load instead of blocking.
 const char[1] NO_PASSPHRASE = { 0 };
@@ -21,6 +34,7 @@ struct Context
 	bool require_alpn;
 	bool has_alpn;
 	bool session_cache;
+	AlpnList* alpn_list;         // server: the protocols offered (owned)
 	bool system_roots_loaded;    // whether the system trust store was added
 	Allocator allocator;
 }
@@ -32,12 +46,32 @@ fn fault ossl_fail(fault f)
 	return f;
 }
 
+// The protocols a server offers, in the form OpenSSL's selection helper wants (length-prefixed names). It lives on the
+// heap so the callback's argument stays valid wherever the Context value goes.
+struct AlpnList
+{
+	char[] wire;
+}
+
+// Called by OpenSSL while it reads a ClientHello: picks the first protocol of ours that the client also offers. With no
+// overlap nothing is selected and the handshake carries on without ALPN.
+fn CInt alpn_select(ossl::Ssl* ssl, char** out, char* outlen, char* in, CUInt inlen, void* arg)
+{
+	AlpnList* list = (AlpnList*)arg;
+	if (ossl::ssl_select_next_proto(out, outlen, list.wire.ptr, (CUInt)list.wire.len, in, inlen) != ossl::OPENSSL_NPN_NEGOTIATED)
+	{
+		return ossl::SSL_TLSEXT_ERR_NOACK;
+	}
+	return ossl::SSL_TLSEXT_ERR_OK;
+}
+
 // SSL_CTX is created once and shared by many connections; free it after all of them.
 fn Context? new_client_context(ClientConfig* cfg, Allocator allocator = mem)
 {
 	cfg.validate()!;
 	ossl::init()!;
 	defer ossl::err_clear_error();
+	char[PATH_BUFFER] zbuf;
 
 	ossl::SslCtx* ctx = ossl::ssl_ctx_new(ossl::tls_client_method());
 	if (!ctx) return ossl_fail(OPENSSL_ERROR)~;
@@ -52,7 +86,7 @@ fn Context? new_client_context(ClientConfig* cfg, Allocator allocator = mem)
 	ossl::ssl_ctx_set_verify_depth(ctx, cfg.max_chain_depth > 0 ? cfg.max_chain_depth : DEFAULT_CHAIN_DEPTH);
 
 	// A configured CA must load, whatever the mode: an unusable path is an error, never an empty store.
-	if (cfg.ca_file.len > 0 && ossl::ssl_ctx_load_verify_file(ctx, (char*)cfg.ca_file.zstr_tcopy()) != 1)
+	if (cfg.ca_file.len > 0 && ossl::ssl_ctx_load_verify_file(ctx, cstr(cfg.ca_file, zbuf[..])!) != 1)
 	{
 		return ossl_fail(CA_LOAD_FAILED)~;
 	}
@@ -60,7 +94,7 @@ fn Context? new_client_context(ClientConfig* cfg, Allocator allocator = mem)
 	{
 		// the directory is read lazily by OpenSSL, so a missing one would only show up as an empty store later
 		if (!file::is_dir(cfg.ca_dir)) return ossl_fail(CA_LOAD_FAILED)~;
-		if (ossl::ssl_ctx_load_verify_dir(ctx, (char*)cfg.ca_dir.zstr_tcopy()) != 1) return ossl_fail(CA_LOAD_FAILED)~;
+		if (ossl::ssl_ctx_load_verify_dir(ctx, cstr(cfg.ca_dir, zbuf[..])!) != 1) return ossl_fail(CA_LOAD_FAILED)~;
 	}
 	// Trust: a configured CA replaces the system store unless also_system_roots asks for both.
 	bool system_roots = false;
@@ -83,32 +117,33 @@ $endif
 	ossl::ssl_ctx_set_default_passwd_cb_userdata(ctx, &NO_PASSPHRASE);
 	if (cfg.client_cert_file.len > 0)
 	{
-		if (ossl::ssl_ctx_use_certificate_chain_file(ctx, (char*)cfg.client_cert_file.zstr_tcopy()) != 1)
+		if (ossl::ssl_ctx_use_certificate_chain_file(ctx, cstr(cfg.client_cert_file, zbuf[..])!) != 1)
 		{
 			return ossl_fail(CERT_LOAD_FAILED)~;
 		}
-		if (ossl::ssl_ctx_use_privatekey_file(ctx, (char*)cfg.client_key_file.zstr_tcopy(), ossl::SSL_FILETYPE_PEM) != 1)
+		if (ossl::ssl_ctx_use_privatekey_file(ctx, cstr(cfg.client_key_file, zbuf[..])!, ossl::SSL_FILETYPE_PEM) != 1)
 		{
 			return ossl_fail(KEY_LOAD_FAILED)~;
 		}
 		if (ossl::ssl_ctx_check_private_key(ctx) != 1) return ossl_fail(KEY_LOAD_FAILED)~;
 	}
 
-	char[] alpn = wire::encode_alpn(cfg.alpn, tmem)!;
+	char[] alpn = wire::encode_alpn(cfg.alpn, allocator)!;
+	defer alloc::free(allocator, alpn.ptr);
 	if (alpn.len > 0)
 	{
 		// 0 means success for this one call
 		if (ossl::ssl_ctx_set_alpn_protos(ctx, alpn.ptr, (CUInt)alpn.len) != 0) return ossl_fail(OPENSSL_ERROR)~;
 	}
-	if (cfg.cipher_list.len > 0 && ossl::ssl_ctx_set_cipher_list(ctx, (char*)cfg.cipher_list.zstr_tcopy()) != 1)
+	if (cfg.cipher_list.len > 0 && ossl::ssl_ctx_set_cipher_list(ctx, cstr(cfg.cipher_list, zbuf[..])!) != 1)
 	{
 		return ossl_fail(CONFIG_INVALID)~;
 	}
-	if (cfg.ciphersuites.len > 0 && ossl::ssl_ctx_set_ciphersuites(ctx, (char*)cfg.ciphersuites.zstr_tcopy()) != 1)
+	if (cfg.ciphersuites.len > 0 && ossl::ssl_ctx_set_ciphersuites(ctx, cstr(cfg.ciphersuites, zbuf[..])!) != 1)
 	{
 		return ossl_fail(CONFIG_INVALID)~;
 	}
-	if (cfg.groups.len > 0 && ossl::ctx_set_groups(ctx, (char*)cfg.groups.zstr_tcopy()) != 1)
+	if (cfg.groups.len > 0 && ossl::ctx_set_groups(ctx, cstr(cfg.groups, zbuf[..])!) != 1)
 	{
 		return ossl_fail(CONFIG_INVALID)~;
 	}
@@ -137,6 +172,7 @@ fn Context? new_server_context(ServerConfig* cfg, Allocator allocator = mem)
 	cfg.validate()!;
 	ossl::init()!;
 	defer ossl::err_clear_error();
+	char[PATH_BUFFER] zbuf;
 
 	ossl::SslCtx* ctx = ossl::ssl_ctx_new(ossl::tls_server_method());
 	if (!ctx) return ossl_fail(OPENSSL_ERROR)~;
@@ -153,11 +189,11 @@ fn Context? new_server_context(ServerConfig* cfg, Allocator allocator = mem)
 	}
 
 	ossl::ssl_ctx_set_default_passwd_cb_userdata(ctx, &NO_PASSPHRASE);
-	if (ossl::ssl_ctx_use_certificate_chain_file(ctx, (char*)cfg.cert_file.zstr_tcopy()) != 1)
+	if (ossl::ssl_ctx_use_certificate_chain_file(ctx, cstr(cfg.cert_file, zbuf[..])!) != 1)
 	{
 		return ossl_fail(CERT_LOAD_FAILED)~;
 	}
-	if (ossl::ssl_ctx_use_privatekey_file(ctx, (char*)cfg.key_file.zstr_tcopy(), ossl::SSL_FILETYPE_PEM) != 1)
+	if (ossl::ssl_ctx_use_privatekey_file(ctx, cstr(cfg.key_file, zbuf[..])!, ossl::SSL_FILETYPE_PEM) != 1)
 	{
 		return ossl_fail(KEY_LOAD_FAILED)~;
 	}
@@ -165,24 +201,37 @@ fn Context? new_server_context(ServerConfig* cfg, Allocator allocator = mem)
 
 	if (cfg.client_ca_file.len > 0)
 	{
-		char* ca = (char*)cfg.client_ca_file.zstr_tcopy();
+		char* ca = cstr(cfg.client_ca_file, zbuf[..])!;
 		if (ossl::ssl_ctx_load_verify_file(ctx, ca) != 1) return ossl_fail(CA_LOAD_FAILED)~;
 		void* names = ossl::ssl_load_client_ca_file(ca);
 		if (!names) return ossl_fail(CA_LOAD_FAILED)~;
 		ossl::ssl_ctx_set_client_ca_list(ctx, names); // takes ownership of the list
 		ossl::ssl_ctx_set_verify(ctx, ossl::SSL_VERIFY_PEER | ossl::SSL_VERIFY_FAIL_IF_NO_PEER_CERT, null);
 	}
-	if (cfg.groups.len > 0 && ossl::ctx_set_groups(ctx, (char*)cfg.groups.zstr_tcopy()) != 1)
+	if (cfg.groups.len > 0 && ossl::ctx_set_groups(ctx, cstr(cfg.groups, zbuf[..])!) != 1)
 	{
 		return ossl_fail(CONFIG_INVALID)~;
 	}
-	return { .handle = ctx, .server = true, .requires_client_cert = cfg.client_ca_file.len > 0, .allocator = allocator };
+	AlpnList* alpn_list = null;
+	char[] wire = wire::encode_alpn(cfg.alpn, allocator)!;
+	if (wire.len > 0)
+	{
+		alpn_list = alloc::new_try(allocator, AlpnList)!;
+		alpn_list.wire = wire;
+		ossl::ssl_ctx_set_alpn_select_cb(ctx, &alpn_select, alpn_list);
+	}
+	return { .handle = ctx, .server = true, .alpn_list = alpn_list, .requires_client_cert = cfg.client_ca_file.len > 0, .allocator = allocator };
 }
 
 fn void Context.free(&self)
 {
 	if (self.handle) ossl::ssl_ctx_free(self.handle);
 	if (self.pin_sha256.ptr) alloc::free(self.allocator, self.pin_sha256.ptr);
+	if (self.alpn_list)
+	{
+		alloc::free(self.allocator, self.alpn_list.wire.ptr);
+		alloc::free(self.allocator, self.alpn_list);
+	}
 	*self = {};
 }
 
@@ -219,6 +268,7 @@ fn Conn? Context.new_client_conn(&self, String server_name, Allocator allocator 
 	NamePlan plan = {};
 	if (server_name.len > 0) plan = validate_server_name(server_name)!;
 	defer ossl::err_clear_error();
+	char[PATH_BUFFER] zbuf;
 
 	Conn conn = self.make_conn(allocator)!;
 	defer catch conn.free();
@@ -227,7 +277,7 @@ fn Conn? Context.new_client_conn(&self, String server_name, Allocator allocator 
 
 	if (server_name.len > 0)
 	{
-		char* zname = (char*)plan.name.zstr_tcopy();
+		char* zname = cstr(plan.name, zbuf[..])!;
 		if (plan.kind == DNS)
 		{
 			if (ossl::set_sni(ssl, zname) != 1) return ossl_fail(OPENSSL_ERROR)~;
@@ -533,4 +583,13 @@ fn bool Conn.session_reused(&self) => self.ssl && ossl::ssl_session_reused(self.
 fn void wipe_session(char[] blob)
 {
 	if (blob.len > 0) ossl::openssl_cleanse(blob.ptr, blob.len);
+}
+
+// The server name the client sent (SNI), empty when none. Server connections only; the bytes belong to OpenSSL and stay
+// valid until the connection is freed.
+fn String Conn.requested_name(&self)
+{
+	if (!self.ssl) return "";
+	char* name = (char*)ossl::ssl_get_servername(self.ssl, ossl::TLSEXT_NAMETYPE_HOST_NAME_TYPE);
+	return name ? ((ZString)name).str_view() : "";
 }

@@ -43,6 +43,10 @@ const CUInt X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS = 0x4;
 const CUInt X509_CHECK_FLAG_NEVER_CHECK_SUBJECT = 0x20;
 const CInt BIO_FLAGS_SHOULD_RETRY = 0x8;
 const CInt SSL_FILETYPE_PEM = 1;
+const CInt OPENSSL_NPN_NEGOTIATED = 1;
+const CInt SSL_TLSEXT_ERR_OK = 0;
+const CInt SSL_TLSEXT_ERR_NOACK = 3;
+const CInt TLSEXT_NAMETYPE_HOST_NAME_TYPE = 0;
 
 extern fn CInt openssl_init_ssl(ulong opts, void* settings) @cname("OPENSSL_init_ssl");
 extern fn CStr openssl_version(CInt which) @cname("OpenSSL_version");
@@ -71,6 +75,9 @@ extern fn CInt ssl_ctx_check_private_key(SslCtx* ctx) @cname("SSL_CTX_check_priv
 // instead of prompting on the terminal userdata must stay valid for the call: pass a static "" string.
 extern fn void ssl_ctx_set_default_passwd_cb_userdata(SslCtx* ctx, void* userdata) @cname("SSL_CTX_set_default_passwd_cb_userdata");
 extern fn void* ssl_ctx_get_default_passwd_cb_userdata(SslCtx* ctx) @cname("SSL_CTX_get_default_passwd_cb_userdata");
+extern fn void ssl_ctx_set_alpn_select_cb(SslCtx* ctx, void* cb, void* arg) @cname("SSL_CTX_set_alpn_select_cb");
+extern fn CInt ssl_select_next_proto(char** out, char* outlen, char* server, CUInt server_len, char* client, CUInt client_len) @cname("SSL_select_next_proto");
+extern fn CStr ssl_get_servername(Ssl* s, CInt type) @cname("SSL_get_servername");
 extern fn void ssl_ctx_set_client_ca_list(SslCtx* ctx, void* list) @cname("SSL_CTX_set_client_CA_list");
 extern fn void* ssl_load_client_ca_file(CStr file) @cname("SSL_load_client_CA_file");
 extern fn CInt ssl_ctx_set_alpn_protos(SslCtx* ctx, char* protos, CUInt len) @cname("SSL_CTX_set_alpn_protos"); // 0 = success (inverted!)
