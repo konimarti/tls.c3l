@@ -26,29 +26,36 @@ struct TlsTransport (Transport)
 // On failure nothing is closed: `inner` still belongs to the caller. On success it belongs to the result.
 fn TlsTransport*? connect(Context* ctx, Transport inner, String server_name, Duration timeout = time::DURATION_ZERO, Allocator allocator = mem)
 {
-	Conn conn = ctx.new_client_conn(server_name, allocator)!;
-	return start_transport(ctx, conn, inner, timeout, allocator);
+	TlsTransport* t = new_transport(ctx, inner, allocator)!;
+	// everything the transport owns exists before the connection is made, so any failure below frees it all in one place
+	Conn? conn = ctx.new_client_conn(server_name, allocator);
+	if (catch err = conn)
+	{
+		t.free();
+		return err~;
+	}
+	t.conn = conn;
+	if (catch err = t.run_handshake(timeout))
+	{
+		t.free();
+		return err~;
+	}
+	return t;
 }
 
-fn TlsTransport*? start_transport(Context* ctx, Conn conn, Transport inner, Duration timeout, Allocator allocator)
+fn TlsTransport*? new_transport(Context* ctx, Transport inner, Allocator allocator)
 {
 	TlsTransport* t = alloc::new_try(allocator, TlsTransport)!;
 	t.ctx = ctx;
-	t.conn = conn;
 	t.inner = inner;
 	t.allocator = allocator;
-	// a failed allocation must not leak what exists; free() copes with buffers that were never allocated
+	// free() copes with buffers that were never allocated
 	t.inbuf = alloc::alloc_array_try(allocator, char, (sz)wire::RECORD_MAX_WIRE) ?? {};
 	t.outbuf = alloc::alloc_array_try(allocator, char, (sz)wire::RECORD_MAX_WIRE) ?? {};
 	if (t.inbuf.len == 0 || t.outbuf.len == 0)
 	{
 		t.free();
 		return OUT_OF_MEMORY~;
-	}
-	if (catch err = t.run_handshake(timeout))
-	{
-		t.free();
-		return err~;
 	}
 	return t;
 }

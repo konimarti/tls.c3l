@@ -76,3 +76,27 @@ fn void test_adapter_handshake_timeout_is_a_total() @test
 	TlsTransport* ok = tls::connect(&cctx, &patient, "localhost")!!;
 	ok.free();
 }
+
+fn void test_adapter_failed_connect_releases_everything() @test
+{
+	if (!loopback::pki_ready()) return;
+	TrackingAllocator ta;
+	ta.init(mem);
+	defer ta.free();
+	ServerEnd end;
+	end.open(loopback::server_cfg("server"));
+	defer end.release();
+	Context cctx = tls::new_client_context(&&loopback::client_cfg())!!;
+	defer cctx.free();
+	// a name the connection cannot be made for, and a handshake that fails on the host name
+	assert(@catch(tls::connect(&cctx, &end, "bad name", time::DURATION_ZERO, &ta)) == tls::CONFIG_INVALID);
+	assert(@catch(tls::connect(&cctx, &end, "wrong.example", time::DURATION_ZERO, &ta)) == tls::HOSTNAME_MISMATCH);
+	assert(ta.allocation_count() == 0);
+	// and a success followed by free
+	ServerEnd end2;
+	end2.open(loopback::server_cfg("server"));
+	defer end2.release();
+	TlsTransport* t = tls::connect(&cctx, &end2, "localhost", time::DURATION_ZERO, &ta)!!;
+	t.free();
+	assert(ta.allocation_count() == 0);
+}
