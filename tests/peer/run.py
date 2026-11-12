@@ -6,6 +6,7 @@
   python3 -I tests/peer/run.py run [--scenario NAME ...] -- CMD ...   start, run CMD, stop (for CI)
   python3 -I tests/peer/run.py serve NAME PORT               (internal) run one python peer in the foreground
   python3 -I tests/peer/run.py serve-test                    our server (build/tlsc --listen) against openssl s_client and raw bytes
+  python3 -I tests/peer/run.py client-test                   our client (build/tlsc) against slow, dropping and silent python servers
 
 The C3 tests read tests/peer/out/state.txt (KEY=value lines). Standard library only.
 """
@@ -417,6 +418,104 @@ def serve_test():
     return 1 if failed else 0
 
 
+class Peer:
+    """A TLS server in this process that behaves in one way per connection: `behave(conn)` gets the TLS socket."""
+
+    def __init__(self, behave):
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(os.path.join(PKI, "server.pem"), os.path.join(PKI, "server.key"))
+        self.listener = socket.socket()
+        self.listener.bind(("127.0.0.1", 0))
+        self.listener.listen(4)
+        self.port = self.listener.getsockname()[1]
+        self.stopping = False
+
+        def run():
+            while not self.stopping:
+                try:
+                    raw, _ = self.listener.accept()
+                except OSError:
+                    return
+                try:
+                    behave(ctx.wrap_socket(raw, server_side=True))
+                except Exception:
+                    pass
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def stop(self):
+        self.stopping = True
+        self.listener.close()
+
+
+def tlsc_run(port, extra, payload=b"hello\n", timeout=30):
+    cmd = [TLSC, "--ca", os.path.join(PKI, "ca.pem")] + extra + ["localhost", str(port)]
+    r = subprocess.run(cmd, input=payload, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
+    return r.returncode, r.stdout.decode(errors="replace"), r.stderr.decode(errors="replace")
+
+
+def client_test():
+    if not os.path.exists(TLSC):
+        sys.stderr.write("build/tlsc is missing: run `c3c build tlsc` first\n")
+        return 2
+    subprocess.check_call(["bash", os.path.join(ROOT, "tests", "pki", "make-pki.sh")])
+    results = []
+
+    def check(name, ok, detail=""):
+        results.append(ok)
+        print("%s %s%s" % ("ok  " if ok else "FAIL", name, "" if ok else ": " + detail))
+
+    def slow(conn):
+        conn.recv(4096)
+        time.sleep(1.5)
+        conn.sendall(b"late answer\n")
+        conn.unwrap()
+
+    def partial_then_drop(conn):
+        conn.recv(4096)
+        conn.sendall(b"partial")
+        socket.socket(fileno=conn.detach()).close()  # no close_notify
+
+    def silent(conn):
+        conn.recv(4096)
+        time.sleep(8)
+
+    p = Peer(slow)
+    rc, out, err = tlsc_run(p.port, [])
+    check("late_answer_is_shown", rc == 0 and "late answer" in out, "rc=%s out=%r err=%r" % (rc, out, err))
+    p.stop()
+
+    p = Peer(partial_then_drop)
+    rc, out, err = tlsc_run(p.port, [])
+    check("truncated_session_is_a_failure", rc == 1 and "partial" in out and "TRUNCATED" in err, "rc=%s out=%r err=%r" % (rc, out, err))
+    p.stop()
+
+    p = Peer(silent)
+    started = time.time()
+    rc, out, err = tlsc_run(p.port, ["--timeout", "2"])
+    check("silence_ends_after_the_timeout", rc == 0 and time.time() - started < 7, "rc=%s err=%r" % (rc, err))
+    p.stop()
+
+    p = Peer(lambda conn: conn.close())
+    for bad in ("abc", "0", "-3"):
+        rc, out, err = tlsc_run(p.port, ["--timeout", bad])
+        check("timeout_%s_is_a_usage_error" % bad, rc == 2 and "--timeout" in err and "usage:" not in err, "rc=%s err=%r" % (rc, err))
+    pin = hashlib_pin("server")
+    rc, out, err = tlsc_run(p.port, ["--insecure", "--pin-sha256", pin])
+    check("insecure_with_a_pin_says_pinned", "verify: pinned (chain not checked)" in out or "SKIPPED" not in out,
+          "rc=%s out=%r" % (rc, out))
+    p.stop()
+    failed = results.count(False)
+    print("%d passed, %d failed" % (len(results) - failed, failed))
+    return 1 if failed else 0
+
+
+def hashlib_pin(name):
+    import hashlib
+    with open(os.path.join(PKI, name + ".pem")) as f:
+        return hashlib.sha256(ssl.PEM_cert_to_DER_cert(f.read())).hexdigest()
+
+
 def main(argv):
     if not argv:
         sys.stderr.write(__doc__)
@@ -426,6 +525,8 @@ def main(argv):
         return serve(rest[0], int(rest[1]))
     if cmd == "serve-test":
         return serve_test()
+    if cmd == "client-test":
+        return client_test()
     names = []
     command = None
     if "--" in rest:

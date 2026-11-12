@@ -102,7 +102,8 @@ fn int parse(String[] args, Options* o)
 				o.pin = args[++i];
 			case "--timeout":
 				if (!has_value) return usage_error(a);
-				o.timeout_s = (int)string::to_integer{int}(args[++i]) ?? -1;
+				o.timeout_s = (int)string::to_integer{int}(args[++i]) ?? 0;
+				if (o.timeout_s < 1) return usage_error("--timeout needs a whole number of seconds, 1 or more");
 			case "--pinned-only":
 				o.pinned_only = true;
 			case "--insecure":
@@ -128,7 +129,6 @@ fn int parse(String[] args, Options* o)
 	o.host = positional[0];
 	o.port = (int)string::to_integer{int}(positional[1]) ?? -1;
 	if (o.port < 0 || o.port > 65535) return usage_error("PORT");
-	if (o.timeout_s < 0) o.timeout_s = -1;
 	// the ways to weaken verification have to be asked for by name
 	if (o.chain_only && !o.insecure)
 	{
@@ -181,7 +181,12 @@ fn int client(Options* o)
 	{
 		foreach (part : o.alpn.tsplit(","))
 		{
-			if (count < names.len) names[count++] = part;
+			if (count == names.len)
+			{
+				io::eprintn("--alpn: at most 16 protocol names");
+				return 2;
+			}
+			names[count++] = part;
 		}
 		cfg.alpn = names[:count];
 	}
@@ -223,51 +228,64 @@ fn int client(Options* o)
 	defer t.free();
 	io::printfn("%s %s", t.conn.version_name(), t.conn.cipher_name());
 	if (t.conn.alpn_selected().len > 0) io::printfn("alpn: %s", safe(t.conn.alpn_selected()));
+	String pinned = cfg.pin_sha256.len > 0 ? ", pinned" : "";
 	switch (cfg.verify)
 	{
 		case FULL:
-			io::printn("verify: ok");
+			io::printfn("verify: ok%s", pinned);
 		case CHAIN_ONLY:
-			io::printn("verify: ok (host name not checked)");
+			io::printfn("verify: ok (host name not checked)%s", pinned);
 		case PINNED_ONLY:
 			io::printn("verify: pinned");
 		case INSECURE_NONE:
-			io::printn("verify: SKIPPED");
+			if (cfg.pin_sha256.len > 0)
+			{
+				io::printn("verify: pinned (chain not checked)");
+			}
+			else
+			{
+				io::printn("verify: SKIPPED");
+			}
 	}
 	(void)io::stdout().flush();
-	relay(t, timeout);
+	fault ended = relay(t, timeout);
 	(void)t.close();
-	return 0;
+	// a clean close and a quiet connection are normal ends; anything else is a failure the caller must be able to see
+	if (ended == tls::CLOSED || ended == tls::TIMEOUT) return 0;
+	io::eprintfn("error: %s", describe(ended));
+	return 1;
 }
 
-// Standard input to the server, the server's answer to standard output, until input ends and the answer has stopped.
-fn void relay(tls::TlsTransport* t, Duration timeout)
+// Writes what the server sends to standard output. Returns why it stopped: TIMEOUT when nothing came for `idle`,
+// CLOSED when the server ended the connection cleanly, or the fault that broke it.
+fn fault drain(tls::TlsTransport* t, Duration idle)
+{
+	char[4096] buf;
+	while (true)
+	{
+		usz? n = t.read(&buf, idle);
+		if (catch err = n) return err;
+		(void)io::stdout().write(buf[:n]);
+		(void)io::stdout().flush();
+	}
+}
+
+// Standard input to the server and the answer to standard output. Once input has ended it keeps reading until the
+// server is done or has been silent for `timeout`. The result says how it ended (see drain); a failed write is returned.
+fn fault relay(tls::TlsTransport* t, Duration timeout)
 {
 	char[4096] buf;
 	while (true)
 	{
 		sz? n = io::stdin().read(&buf);
 		if (catch err = n) break;
-		if (@catch(t.write(buf[:n], timeout))) return;
-		if (!answer(t, 300 * time::MS)) return;
+		if (n == 0) break; // end of input
+		if (catch err = t.write(buf[:n], timeout)) return err;
+		// show a prompt answer while more input may follow
+		fault f = drain(t, 200 * time::MS);
+		if (f != tls::TIMEOUT) return f;
 	}
-	// input is over: collect what is still coming
-	while (answer(t, 1 * time::SEC)) {}
-}
-
-// Writes what the server sent within `wait`. False when nothing came or the connection ended.
-fn bool answer(tls::TlsTransport* t, Duration wait)
-{
-	char[4096] buf;
-	bool got = false;
-	while (true)
-	{
-		usz? n = t.read(&buf, got ? 50 * time::MS : wait);
-		if (catch err = n) return got && err == tls::TIMEOUT;
-		(void)io::stdout().write(buf[:n]);
-		(void)io::stdout().flush();
-		got = true;
-	}
+	return drain(t, timeout);
 }
 
 // ---- server ----
@@ -359,11 +377,7 @@ fn int main(String[] args)
 {
 	Options o = { .port = -1 };
 	int rc = parse(args, &o);
-	if (rc != 0)
-	{
-		io::eprintn(USAGE);
-		return rc;
-	}
+	if (rc != 0) return rc;
 	if (o.help)
 	{
 		io::printn(USAGE);
