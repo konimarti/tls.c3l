@@ -1,6 +1,7 @@
 #!/bin/bash
 # Generates the test PKI under tests/pki/out/ with the openssl CLI only. Test keys, never installed anywhere.
 # Idempotent: does nothing when out/.complete exists; remove tests/pki/out to regenerate.
+# Needs OpenSSL 3.0 or later (not LibreSSL: on macOS put Homebrew's openssl first in PATH).
 set -eu
 cd "$(dirname "$0")"
 OUT=out
@@ -15,17 +16,31 @@ EC="-algorithm EC -pkeyopt ec_paramgen_curve:P-256"
 RSA2048="-algorithm RSA -pkeyopt rsa_keygen_bits:2048"
 RSA1024="-algorithm RSA -pkeyopt rsa_keygen_bits:1024"
 
+# run COMMAND...: quiet on success; on failure prints the command and what it said, and stops
+run() {
+  local log
+  log=$(mktemp "${TMPDIR:-/tmp}/pki.XXXXXX")
+  if "$@" >"$log" 2>&1; then
+    rm -f "$log"
+  else
+    echo "pki: command failed: $*" >&2
+    cat "$log" >&2
+    rm -f "$log"
+    exit 1
+  fi
+}
+
 genkey() { # genkey KIND FILE
   case "$1" in
-    ec) openssl genpkey $EC -out "$2" 2>/dev/null ;;
-    rsa) openssl genpkey $RSA2048 -out "$2" 2>/dev/null ;;
-    rsa1024) openssl genpkey $RSA1024 -out "$2" 2>/dev/null ;;
+    ec) run openssl genpkey $EC -out "$2" ;;
+    rsa) run openssl genpkey $RSA2048 -out "$2" ;;
+    rsa1024) run openssl genpkey $RSA1024 -out "$2" ;;
   esac
 }
 
 root() { # root NAME SUBJECT
   genkey ec "$OUT/$1.key"
-  openssl req -x509 -new -key "$OUT/$1.key" -subj "$2" -days 3650 \
+  run openssl req -x509 -new -key "$OUT/$1.key" -subj "$2" -days 3650 \
     -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign,cRLSign" \
     -out "$OUT/$1.pem"
 }
@@ -36,11 +51,42 @@ leaf() {
   local name=$1 kind=$2 subj=$3 ext=$4 signer=$5
   shift 5
   genkey "$kind" "$OUT/$name.key"
-  openssl req -new -key "$OUT/$name.key" -subj "$subj" -out "$OUT/$name.csr"
+  run openssl req -new -key "$OUT/$name.key" -subj "$subj" -out "$OUT/$name.csr"
   printf '%s\n' "$ext" > "$OUT/$name.ext"
-  openssl x509 -req -in "$OUT/$name.csr" -CA "$OUT/$signer.pem" -CAkey "$OUT/$signer.key" -CAcreateserial \
-    -days 3650 -extfile "$OUT/$name.ext" -out "$OUT/$name.pem" "$@" 2>/dev/null
+  # ${1+"$@"}: no unbound-variable error for an empty list in bash 3.2
+  run openssl x509 -req -in "$OUT/$name.csr" -CA "$OUT/$signer.pem" -CAkey "$OUT/$signer.key" -CAcreateserial \
+    -days 3650 -extfile "$OUT/$name.ext" -out "$OUT/$name.pem" ${1+"$@"}
   rm -f "$OUT/$name.csr"
+}
+
+# leaf_dated NAME KIND SUBJECT EXTENSIONS SIGNER START END: the validity period is fixed (YYYYMMDDHHMMSSZ).
+# `openssl x509 -not_before/-not_after` only exist from OpenSSL 3.4, `openssl ca` has -startdate/-enddate in 3.0.
+leaf_dated() {
+  local name=$1 kind=$2 subj=$3 ext=$4 signer=$5 start=$6 end=$7
+  local dir="$OUT/$name.ca"
+  genkey "$kind" "$OUT/$name.key"
+  run openssl req -new -key "$OUT/$name.key" -subj "$subj" -out "$OUT/$name.csr"
+  { printf '[v3]\n'; printf '%s\n' "$ext"; } > "$OUT/$name.ext"
+  mkdir -p "$dir/new"
+  : > "$dir/index.txt"
+  echo "${start:0:8}" > "$dir/serial" # distinct per certificate
+  cat > "$dir/ca.cnf" <<CNF
+[ca]
+default_ca = CA_default
+[CA_default]
+database = $dir/index.txt
+new_certs_dir = $dir/new
+serial = $dir/serial
+unique_subject = no
+default_md = sha256
+policy = policy_any
+[policy_any]
+commonName = supplied
+CNF
+  run openssl ca -config "$dir/ca.cnf" -batch -notext -cert "$OUT/$signer.pem" -keyfile "$OUT/$signer.key" \
+    -in "$OUT/$name.csr" -out "$OUT/$name.pem" -extfile "$OUT/$name.ext" -extensions v3 \
+    -startdate "$start" -enddate "$end"
+  rm -rf "$dir" "$OUT/$name.csr"
 }
 
 nl='
@@ -62,20 +108,20 @@ root otherca "/CN=tls.c3l other CA"
 leaf server ec "/CN=localhost" "$SERVER_EXT" ca
 leaf server-rsa rsa "/CN=localhost" "$SERVER_RSA_EXT" ca
 leaf client ec "/CN=test client" "$(base_ext "" clientAuth)" ca
-openssl pkey -in "$OUT/client.key" -aes256 -passout pass:x -out "$OUT/client-enc.key"
+run openssl pkey -in "$OUT/client.key" -aes256 -passout pass:x -out "$OUT/client-enc.key"
 genkey ec "$OUT/key-mismatch.key"
 leaf alt ec "/CN=alt.test" "$(base_ext "subjectAltName=DNS:alt.test")" ca
 
 # ---- validity
-leaf expired ec "/CN=localhost" "$SERVER_EXT" ca -not_before 20200101000000Z -not_after 20200102000000Z
-leaf notyet ec "/CN=localhost" "$SERVER_EXT" ca -not_before 20990101000000Z -not_after 21000101000000Z
+leaf_dated expired ec "/CN=localhost" "$SERVER_EXT" ca 20200101000000Z 20200102000000Z
+leaf_dated notyet ec "/CN=localhost" "$SERVER_EXT" ca 20990101000000Z 21000101000000Z
 
 # ---- trust
 leaf wronghost ec "/CN=other.test" "$(base_ext "subjectAltName=DNS:other.test")" ca
 leaf untrusted ec "/CN=localhost" "$SERVER_EXT" otherca
 cat "$OUT/untrusted.pem" "$OUT/otherca.pem" > "$OUT/untrusted-chain.pem"
 genkey ec "$OUT/selfsigned.key"
-openssl req -x509 -new -key "$OUT/selfsigned.key" -subj "/CN=localhost" -days 3650 \
+run openssl req -x509 -new -key "$OUT/selfsigned.key" -subj "/CN=localhost" -days 3650 \
   -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" -addext "basicConstraints=CA:FALSE" -out "$OUT/selfsigned.pem"
 
 # ---- certificate policy
@@ -83,10 +129,10 @@ openssl req -x509 -new -key "$OUT/selfsigned.key" -subj "/CN=localhost" -days 36
 leaf wrong-eku ec "/CN=localhost" "$(base_ext "$SAN" clientAuth)" ca
 # an intermediate that is not a CA, and a leaf below it
 genkey ec "$OUT/bad-intermediate.key"
-openssl req -new -key "$OUT/bad-intermediate.key" -subj "/CN=not a CA" -out "$OUT/bad-intermediate.csr"
+run openssl req -new -key "$OUT/bad-intermediate.key" -subj "/CN=not a CA" -out "$OUT/bad-intermediate.csr"
 printf 'basicConstraints=CA:FALSE\nkeyUsage=digitalSignature\n' > "$OUT/bad-intermediate.ext"
-openssl x509 -req -in "$OUT/bad-intermediate.csr" -CA "$OUT/ca.pem" -CAkey "$OUT/ca.key" -CAcreateserial -days 3650 \
-  -extfile "$OUT/bad-intermediate.ext" -out "$OUT/bad-intermediate.pem" 2>/dev/null
+run openssl x509 -req -in "$OUT/bad-intermediate.csr" -CA "$OUT/ca.pem" -CAkey "$OUT/ca.key" -CAcreateserial -days 3650 \
+  -extfile "$OUT/bad-intermediate.ext" -out "$OUT/bad-intermediate.pem"
 rm -f "$OUT/bad-intermediate.csr"
 leaf bad-leaf ec "/CN=localhost" "$SERVER_EXT" bad-intermediate
 cat "$OUT/bad-leaf.pem" "$OUT/bad-intermediate.pem" > "$OUT/bad-intermediate-chain.pem"
@@ -106,7 +152,7 @@ leaf nul-san ec "/CN=localhost" "$(base_ext "subjectAltName=DER:30:14:82:12:65:7
 # ---- a hashed CA directory
 mkdir "$OUT/hashed"
 cp "$OUT/ca.pem" "$OUT/hashed/"
-openssl rehash "$OUT/hashed" >/dev/null
+run openssl rehash "$OUT/hashed"
 
 # ---- a minimal OpenSSL configuration for peers started by tests (TLS 1.1 and lower security level where needed)
 cat > "$OUT/openssl-test.cnf" <<CNF
