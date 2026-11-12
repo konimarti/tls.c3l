@@ -3,14 +3,26 @@ module tls::loopback;
 
 import tls;
 import tls::ossl;
-import std::io;
+import std::io, std::os::env;
 
-// The certificates come from tests/pki/make-pki.sh. Tests that need them print a note and pass when it was not run.
+// What a test that needs the generated certificates does when they may be missing.
+enum PkiDecision { RUN, SKIP, FAIL }
+
+fn PkiDecision pki_decision(bool present, bool required)
+{
+	if (present) return RUN;
+	return required ? FAIL : SKIP;
+}
+
+// The certificates come from tests/pki/make-pki.sh. Without them a test prints a note and passes, unless the
+// environment variable TLS_REQUIRE_PKI is set (CI sets it): then a missing PKI fails the test instead of hiding it.
 fn bool pki_ready()
 {
-	if (file::is_file("tests/pki/out/.complete")) return true;
-	io::printn("SKIP: tests/pki/out is missing, run tests/pki/make-pki.sh");
-	return false;
+	bool required = @ok(env::tget_var("TLS_REQUIRE_PKI"));
+	PkiDecision d = pki_decision(file::is_file("tests/pki/out/.complete"), required);
+	assert(d != FAIL, "tests/pki/out is missing and TLS_REQUIRE_PKI is set: run tests/pki/make-pki.sh");
+	if (d == SKIP) io::printn("SKIP: tests/pki/out is missing, run tests/pki/make-pki.sh");
+	return d == RUN;
 }
 
 fn String pki(String name) => "tests/pki/out/".tconcat(name);
