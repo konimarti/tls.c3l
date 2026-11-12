@@ -4,6 +4,7 @@
   python3 -I tests/peer/run.py start [--scenario NAME ...]   start peers, write tests/peer/out/state.txt, exit
   python3 -I tests/peer/run.py stop                          kill every recorded peer
   python3 -I tests/peer/run.py run [--scenario NAME ...] -- CMD ...   start, run CMD, stop (for CI)
+  python3 -I tests/peer/run.py serve NAME PORT               (internal) run one python peer in the foreground
 
 The C3 tests read tests/peer/out/state.txt (KEY=value lines). Standard library only.
 """
@@ -11,8 +12,10 @@ import os
 import shutil
 import signal
 import socket
+import ssl
 import subprocess
 import sys
+import threading
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -33,7 +36,9 @@ SCENARIOS = {
     # prints the messages it receives, so a test can read what the client really sent
     "trace13": ("server", ["-tls1_3", "-www", "-trace"]),
 }
-DEFAULT = ["tls13", "tls12", "rsa13", "rsa12", "rev13", "ip", "trace13"]
+# peers written in Python: raw TCP or the ssl module, each behaves in one specific way
+PYTHON_PEERS = ["silent", "garbage", "echo12", "dropper", "closer", "sni"]  # sni also echoes (TLS 1.3)
+DEFAULT = ["tls13", "tls12", "rsa13", "rsa12", "rev13", "ip", "trace13"] + PYTHON_PEERS
 
 
 def free_port():
@@ -102,11 +107,15 @@ def start(names):
     lines = ["CA=" + os.path.join(PKI, "ca.pem"), "DIR=" + PKI, "OUT=" + OUT]
     try:
         for name in names:
-            cert, extra = SCENARIOS[name]
             port = free_port()
             log = open(os.path.join(OUT, name + ".log"), "wb")
-            cmd = (["stdbuf", "-oL", "-eL"] if shutil.which("stdbuf") else []) + ["openssl", "s_server", "-quiet", "-accept", "127.0.0.1:%d" % port,
-                   "-cert", os.path.join(PKI, cert + ".pem"), "-key", os.path.join(PKI, cert + ".key")] + extra
+            if name in PYTHON_PEERS:
+                cmd = [sys.executable, "-I", os.path.abspath(__file__), "serve", name, str(port)]
+            else:
+                cert, extra = SCENARIOS[name]
+                cmd = (["stdbuf", "-oL", "-eL"] if shutil.which("stdbuf") else []) + ["openssl", "s_server", "-quiet",
+                       "-accept", "127.0.0.1:%d" % port, "-cert", os.path.join(PKI, cert + ".pem"),
+                       "-key", os.path.join(PKI, cert + ".key")] + extra
             proc = subprocess.Popen(cmd, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                                     start_new_session=True)
             pids.append(proc.pid)
@@ -144,11 +153,76 @@ def stop():
         os.remove(STATE)
 
 
+def tls_context(version):
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(os.path.join(PKI, "server.pem"), os.path.join(PKI, "server.key"))
+    ctx.minimum_version = version
+    ctx.maximum_version = version
+    return ctx
+
+
+def serve(name, port):
+    """One peer that misbehaves (or behaves) in a single, specific way. Runs until killed."""
+    listener = socket.socket()
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", port))
+    listener.listen(16)
+    held = []  # connections the peer keeps open and quiet
+    sni_log = os.path.join(OUT, "sni.log")
+    version = ssl.TLSVersion.TLSv1_2 if name == "echo12" else ssl.TLSVersion.TLSv1_3
+    ctx = tls_context(version) if name in ("echo12", "dropper", "closer", "sni") else None
+    if name == "sni":
+        def record_name(sock, server_name, context):
+            with open(sni_log, "a") as f:
+                f.write("%s\n" % server_name)
+        ctx.sni_callback = record_name
+
+    def handle(raw):
+        try:
+            if name == "silent":
+                held.append(raw)  # never answers, never closes
+                return
+            if name == "garbage":
+                raw.recv(4096)
+                raw.sendall(b"HTTP/1.1 400 Bad Request\r\n\r\n")
+                raw.close()
+                return
+            conn = ctx.wrap_socket(raw, server_side=True)
+            if name in ("echo12", "sni"):
+                while True:
+                    data = conn.recv(65536)
+                    if not data:
+                        break
+                    conn.sendall(data)
+                conn.close()
+            elif name == "dropper":
+                conn.recv(65536)  # the client's first application data
+                plain = socket.socket(fileno=conn.detach())  # no close_notify
+                plain.shutdown(socket.SHUT_WR)
+                plain.close()
+            elif name == "closer":
+                conn.recv(65536)
+                conn.sendall(b"bye")
+                conn.unwrap()  # close_notify
+                conn.close()
+        except Exception:
+            try:
+                raw.close()
+            except OSError:
+                pass
+
+    while True:
+        raw, _ = listener.accept()
+        threading.Thread(target=handle, args=(raw,), daemon=True).start()
+
+
 def main(argv):
     if not argv:
         sys.stderr.write(__doc__)
         return 2
     cmd, rest = argv[0], argv[1:]
+    if cmd == "serve":
+        return serve(rest[0], int(rest[1]))
     names = []
     command = None
     if "--" in rest:
@@ -166,7 +240,7 @@ def main(argv):
             sys.stderr.write("unknown argument " + rest[i] + "\n")
             return 2
     for n in names:
-        if n not in SCENARIOS:
+        if n not in SCENARIOS and n not in PYTHON_PEERS:
             sys.stderr.write("unknown scenario %s (have: %s)\n" % (n, " ".join(sorted(SCENARIOS))))
             return 2
     names = names or DEFAULT
