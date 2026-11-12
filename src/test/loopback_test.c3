@@ -601,3 +601,22 @@ fn void test_loopback_pin_mismatch_sends_nothing_tls12() @test
 	if (!loopback::pki_ready()) return;
 	check_pin_mismatch_sends_nothing(true);
 }
+
+fn void test_loopback_server_context_records_the_client_certificate_demand() @test
+{
+	if (!loopback::pki_ready()) return;
+	ServerConfig open_server = loopback::server_cfg("server");
+	Context a = tls::new_server_context(&open_server)!!;
+	defer a.free();
+	assert(a.server);
+	assert(!a.requires_client_cert);
+	ServerConfig strict = loopback::server_cfg("server");
+	strict.client_ca_file = loopback::pki("ca.pem");
+	Context b = tls::new_server_context(&strict)!!;
+	defer b.free();
+	assert(b.requires_client_cert);
+	Context c = tls::new_client_context(&&loopback::client_cfg())!!;
+	defer c.free();
+	assert(!c.server);
+	assert(!c.requires_client_cert);
+}

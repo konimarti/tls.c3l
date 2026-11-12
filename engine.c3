@@ -15,7 +15,8 @@ struct Context
 {
 	ossl::SslCtx* handle;
 	bool server;
-	VerifyMode verify;
+	bool requires_client_cert;   // server context: a client certificate from the configured CAs is demanded
+	VerifyMode verify;           // client context
 	char[] pin_sha256;           // copy of the configured pin (owned), empty = none
 	bool require_alpn;
 	bool has_alpn;
@@ -170,7 +171,7 @@ fn Context? new_server_context(ServerConfig* cfg, Allocator allocator = mem)
 	{
 		return ossl_fail(CONFIG_INVALID)~;
 	}
-	return { .handle = ctx, .server = true, .verify = cfg.client_ca_file.len > 0 ? CHAIN_ONLY : INSECURE_NONE, .allocator = allocator };
+	return { .handle = ctx, .server = true, .requires_client_cert = cfg.client_ca_file.len > 0, .allocator = allocator };
 }
 
 fn void Context.free(&self)
