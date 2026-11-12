@@ -20,26 +20,36 @@ permissions:
 jobs:
   build-linux:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
     env:
       # a missing certificate or peer fails the tests instead of skipping them
       TLS_REQUIRE_PKI: "1"
       TLS_REQUIRE_PEERS: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Setup C3
-        shell: bash
         env:
           INPUT_VERSION: ${{ github.event.inputs.version }}
         run: |
           VERSION="${INPUT_VERSION:-$C3_VERSION}"
           mkdir -p /opt/c3
           wget -O /tmp/c3.tar.gz "https://github.com/c3lang/c3c/releases/download/${VERSION}/c3-linux.tar.gz"
-          tar -xvzf /tmp/c3.tar.gz -C /opt/c3 --strip-components=1
+          tar -xzf /tmp/c3.tar.gz -C /opt/c3 --strip-components=1
           echo "/opt/c3" >> "$GITHUB_PATH"
 
+      # distribution packages cannot be pinned here: their versions go into the log instead
       - name: Install OpenSSL runtime and tools
-        run: sudo apt-get update && sudo apt-get install -y libssl3 openssl python3
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl3 openssl python3
+          openssl version
+          python3 --version
+
+      - name: Show the compiler
+        run: c3c --version
 
       - name: Check that every OpenSSL symbol we bind exists
         run: sh tests/check-symbols.sh ossl.c3
@@ -47,11 +57,17 @@ jobs:
       - name: Generate the test certificates
         run: bash tests/pki/make-pki.sh
 
+      # includes version_matches_project_json
       - name: Run unit tests against real peers
         run: python3 -I tests/peer/run.py run -- c3c test
 
       - name: Build the tool
         run: c3c build tlsc
+
+      - name: The tool reports the library version
+        run: |
+          expected="$(sed -n 's/^[[:space:]]*"version": "\(.*\)",\{0,1\}$/\1/p' project.json)"
+          test "$(build/tlsc --version)" = "tlsc ${expected}"
 
       - name: Server against openssl s_client
         run: python3 -I tests/peer/run.py serve-test
@@ -64,22 +80,28 @@ jobs:
 
   build-macos:
     runs-on: macos-14
+    defaults:
+      run:
+        shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Setup C3
-        shell: bash
         env:
           INPUT_VERSION: ${{ github.event.inputs.version }}
         run: |
           VERSION="${INPUT_VERSION:-$C3_VERSION}"
           mkdir -p /tmp/c3
-          curl -L -o /tmp/c3.zip "https://github.com/c3lang/c3c/releases/download/${VERSION}/c3-macos.zip"
+          curl -fL -o /tmp/c3.zip "https://github.com/c3lang/c3c/releases/download/${VERSION}/c3-macos.zip"
           unzip -q /tmp/c3.zip -d /tmp/c3
           echo "$(dirname "$(find /tmp/c3 -name c3c -type f | head -1)")" >> "$GITHUB_PATH"
 
+      # Homebrew's version cannot be pinned easily: it is printed so a failure can be matched to it
       - name: Install OpenSSL
-        run: brew install openssl@3
+        run: |
+          brew install openssl@3
+          /opt/homebrew/opt/openssl@3/bin/openssl version
+          c3c --version
 
       - name: Point the project at Homebrew's OpenSSL
         run: |
@@ -98,6 +120,7 @@ jobs:
           openssl version
           bash tests/pki/make-pki.sh
 
+      # includes version_matches_project_json
       - name: Unit tests
         env:
           TLS_REQUIRE_PKI: "1"
@@ -106,10 +129,18 @@ jobs:
       - name: Build the tool
         run: c3c build tlsc
 
+      - name: The tool reports the library version
+        run: |
+          expected="$(python3 -c 'import json; print(json.load(open("project.json"))["version"])')"
+          test "$(build/tlsc --version)" = "tlsc ${expected}"
+
   build-windows:
     runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Setup C3
         shell: pwsh
@@ -122,11 +153,16 @@ jobs:
           $dir = (Get-ChildItem -Path C:\c3 -Recurse -Filter c3c.exe | Select-Object -First 1).DirectoryName
           echo $dir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
+      # chocolatey's package is not pinned here (the version is printed); it installs under Program Files
       - name: Install OpenSSL
-        run: choco install openssl --no-progress -y
+        shell: pwsh
+        run: |
+          choco install openssl --no-progress -y
+          & "C:\Program Files\OpenSSL-Win64\bin\openssl.exe" version
+          # the DLLs are found through PATH on this runner; applications should ship them next to the executable
+          echo "C:\Program Files\OpenSSL-Win64\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
-      # no headers are needed, only the import libraries of the OpenSSL install; the DLLs must sit next to the test
-      # binary (the application directory is searched first)
+      # no headers are needed, only the import libraries of the OpenSSL install
       - name: Point the project at the OpenSSL import libraries
         shell: pwsh
         run: |
@@ -136,11 +172,18 @@ jobs:
           $p | Add-Member -Force -NotePropertyName "linked-libraries" -NotePropertyValue @("libssl", "libcrypto")
           $p.PSObject.Properties.Remove("link-args")
           $p | ConvertTo-Json -Depth 10 | Set-Content project.json
-          New-Item -ItemType Directory -Force build | Out-Null
-          Copy-Item "$root\bin\libssl-3-x64.dll", "$root\bin\libcrypto-3-x64.dll" build\
 
+      - name: Show the compiler
+        run: c3c --version
+
+      # includes version_matches_project_json; the peer and certificate tests skip on this job
       - name: Unit tests
         run: c3c test
 
       - name: Build the tool
         run: c3c build tlsc
+
+      - name: The tool reports the library version
+        run: |
+          expected="$(python -c 'import json; print(json.load(open("project.json"))["version"])')"
+          test "$(build/tlsc.exe --version | tr -d '\r')" = "tlsc ${expected}"
