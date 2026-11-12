@@ -5,8 +5,6 @@ module tlsc;
 import tls;
 import std::io, std::net::tcp, std::time, std::thread, std::encoding::hex;
 
-const String VERSION = env::PROJECT_VERSION;
-
 const String USAGE = `tlsc: connect to a TLS server, or run an echo server
 
 usage:
@@ -385,7 +383,7 @@ fn int main(String[] args)
 	}
 	if (o.show_version)
 	{
-		io::printfn("tlsc %s", VERSION);
+		io::printfn("tlsc %s", tls::VERSION);
 		return 0;
 	}
 	return o.listen ? listen(&o) : client(&o);
