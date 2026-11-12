@@ -214,7 +214,8 @@ fn void test_peer_garbage_is_a_protocol_error() @test
 	Session s;
 	defer s.close();
 	fault f = @catch(s.open("garbage"));
-	assert(f == tls::PROTOCOL_ERROR || f == tls::PROTOCOL_VERSION, "fault %s", f);
+	// observed on OpenSSL 3.5.5: HTTP text where a ServerHello should be is a protocol error
+	assert(f == tls::PROTOCOL_ERROR, "fault %s", f);
 	assert(s.t == null);
 	assert(!s.tcp.closed);
 }
