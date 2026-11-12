@@ -4,6 +4,8 @@ module tls::peer_support;
 import tls;
 import std::io, std::os::env;
 
+// The peers are `openssl s_server` processes, which serve ONE connection at a time: close a connection before opening
+// the next one to the same peer, or the second waits for its timeout (a python peer in run.py serves several at once).
 const String STATE_FILE = "tests/peer/out/state.txt";
 
 // True when the peers are up. Without the state file a test prints a note and passes, unless TLS_REQUIRE_PEERS is
