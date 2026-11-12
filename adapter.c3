@@ -17,6 +17,7 @@ struct TlsTransport (Transport)
 	char[] outbuf;
 	bool closed;
 	bool peer_closed;          // close_notify received
+	fault broken;              // the transport underneath failed to take bytes the engine had produced
 	Allocator allocator;
 }
 
@@ -54,11 +55,18 @@ fn TlsTransport*? start_transport(Context* ctx, Conn conn, Transport inner, Dura
 // Sends everything the engine has queued.
 fn void? TlsTransport.flush(&self, Duration timeout)
 {
+	if (self.broken) return self.broken~;
 	while (self.conn.out_pending() > 0)
 	{
 		usz n = self.conn.take_out(self.outbuf);
 		if (n == 0) break;
-		self.inner.write(self.outbuf[:n], timeout)!;
+		if (catch err = self.inner.write(self.outbuf[:n], timeout))
+		{
+			// the bytes have left the engine and the transport may have sent part of them: whether a retry would repeat
+			// or skip data is unknown, and the peer would end the session on the gap. The stream is lost.
+			self.broken = err;
+			return err~;
+		}
 	}
 }
 
@@ -100,6 +108,7 @@ fn void? TlsTransport.run_handshake(&self, Duration timeout)
 fn usz? TlsTransport.read(&self, char[] buf, Duration timeout) @dynamic
 {
 	if (self.closed) return CLOSED~;
+	if (self.broken) return self.broken~;
 	if (buf.len == 0) return 0;
 	while (true)
 	{
@@ -121,10 +130,12 @@ fn usz? TlsTransport.read(&self, char[] buf, Duration timeout) @dynamic
 	}
 }
 
-// All of data or a fault.
+// All of data or a fault. After a fault the TlsTransport is unusable: the data of the failed call may or may not be on
+// its way, and every later read or write returns the same fault (reconnect instead of retrying).
 fn void? TlsTransport.write(&self, char[] data, Duration timeout) @dynamic
 {
 	if (self.closed || self.peer_closed) return CLOSED~;
+	if (self.broken) return self.broken~;
 	usz done = 0;
 	while (done < data.len)
 	{
