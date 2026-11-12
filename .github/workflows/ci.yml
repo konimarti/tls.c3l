@@ -1,0 +1,126 @@
+name: CI
+on:
+  push:
+    branches: [ master, ci_testing ]
+  pull_request:
+    branches: [ master ]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'C3 compiler version to use'
+        required: false
+        default: 'v0.8.6'
+
+env:
+  C3_VERSION: v0.8.6
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    env:
+      # a missing certificate or peer fails the tests instead of skipping them
+      TLS_REQUIRE_PKI: "1"
+      TLS_REQUIRE_PEERS: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup C3
+        shell: bash
+        run: |
+          VERSION="${{ github.event.inputs.version || env.C3_VERSION }}"
+          mkdir -p /opt/c3
+          wget -O /tmp/c3.tar.gz "https://github.com/c3lang/c3c/releases/download/${VERSION}/c3-linux.tar.gz"
+          tar -xvzf /tmp/c3.tar.gz -C /opt/c3 --strip-components=1
+          echo "/opt/c3" >> "$GITHUB_PATH"
+
+      - name: Install OpenSSL runtime and tools
+        run: sudo apt-get update && sudo apt-get install -y libssl3 openssl python3
+
+      - name: Check that every OpenSSL symbol we bind exists
+        run: sh tests/check-symbols.sh ossl.c3
+
+      - name: Generate the test certificates
+        run: bash tests/pki/make-pki.sh
+
+      - name: Run unit tests against real peers
+        run: python3 -I tests/peer/run.py run -- c3c test
+
+      - name: Build the tool
+        run: c3c build tlsc
+
+      - name: Server against openssl s_client
+        run: python3 -I tests/peer/run.py serve-test
+
+      - name: Run unit tests with AddressSanitizer
+        run: python3 -I tests/peer/run.py run -- c3c test --sanitize=address
+
+  build-macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup C3
+        shell: bash
+        run: |
+          VERSION="${{ github.event.inputs.version || env.C3_VERSION }}"
+          mkdir -p /tmp/c3
+          curl -L -o /tmp/c3.zip "https://github.com/c3lang/c3c/releases/download/${VERSION}/c3-macos.zip"
+          unzip -q /tmp/c3.zip -d /tmp/c3
+          echo "$(dirname "$(find /tmp/c3 -name c3c -type f | head -1)")" >> "$GITHUB_PATH"
+
+      - name: Install OpenSSL
+        run: brew install openssl@3
+
+      - name: Point the project at Homebrew's OpenSSL
+        run: |
+          python3 - <<'PY'
+          import json
+          p = json.load(open("project.json"))
+          p["link-args"] = ["-L/opt/homebrew/opt/openssl@3/lib", "-lssl", "-lcrypto", "-Wl,-rpath,/opt/homebrew/opt/openssl@3/lib"]
+          json.dump(p, open("project.json", "w"), indent=2)
+          PY
+
+      # the peer tests need OpenSSL's command line (macOS ships LibreSSL's): they skip here until a job puts
+      # /opt/homebrew/opt/openssl@3/bin first in PATH and runs the peer harness as on Linux
+      - name: Unit tests
+        run: c3c test
+
+      - name: Build the tool
+        run: c3c build tlsc
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup C3
+        shell: pwsh
+        run: |
+          $version = "${{ github.event.inputs.version || env.C3_VERSION }}"
+          Invoke-WebRequest -Uri "https://github.com/c3lang/c3c/releases/download/$version/c3-windows.zip" -OutFile c3.zip
+          Expand-Archive c3.zip -DestinationPath C:\c3
+          $dir = (Get-ChildItem -Path C:\c3 -Recurse -Filter c3c.exe | Select-Object -First 1).DirectoryName
+          echo $dir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Install OpenSSL
+        run: choco install openssl --no-progress -y
+
+      # no headers are needed, only the import libraries of the OpenSSL install; the DLLs must sit next to the test
+      # binary (the application directory is searched first)
+      - name: Point the project at the OpenSSL import libraries
+        shell: pwsh
+        run: |
+          $root = "C:\Program Files\OpenSSL-Win64"
+          $p = Get-Content project.json | ConvertFrom-Json
+          $p | Add-Member -Force -NotePropertyName "linker-search-paths" -NotePropertyValue @("$root\lib\VC\x64\MD")
+          $p | Add-Member -Force -NotePropertyName "linked-libraries" -NotePropertyValue @("libssl", "libcrypto")
+          $p.PSObject.Properties.Remove("link-args")
+          $p | ConvertTo-Json -Depth 10 | Set-Content project.json
+          New-Item -ItemType Directory -Force build | Out-Null
+          Copy-Item "$root\bin\libssl-3-x64.dll", "$root\bin\libcrypto-3-x64.dll" build\
+
+      - name: Unit tests
+        run: c3c test
+
+      - name: Build the tool
+        run: c3c build tlsc
