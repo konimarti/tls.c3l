@@ -8,27 +8,42 @@
       "linked-libraries": []
     },
     "linux-aarch64": {
-      "link-args": [],
+      "link-args": [
+        "-l:libssl.so.3",
+        "-l:libcrypto.so.3"
+      ],
       "dependencies": [],
       "linked-libraries": []
     },
     "linux-riscv32": {
-      "link-args": [],
+      "link-args": [
+        "-l:libssl.so.3",
+        "-l:libcrypto.so.3"
+      ],
       "dependencies": [],
       "linked-libraries": []
     },
     "linux-riscv64": {
-      "link-args": [],
+      "link-args": [
+        "-l:libssl.so.3",
+        "-l:libcrypto.so.3"
+      ],
       "dependencies": [],
       "linked-libraries": []
     },
     "linux-x86": {
-      "link-args": [],
+      "link-args": [
+        "-l:libssl.so.3",
+        "-l:libcrypto.so.3"
+      ],
       "dependencies": [],
       "linked-libraries": []
     },
     "linux-x64": {
-      "link-args": [],
+      "link-args": [
+        "-l:libssl.so.3",
+        "-l:libcrypto.so.3"
+      ],
       "dependencies": [],
       "linked-libraries": []
     },
