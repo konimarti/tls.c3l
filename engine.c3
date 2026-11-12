@@ -379,7 +379,12 @@ fn usz? Conn.write(&self, char[] plain)
 	if (ossl::ssl_write_ex(self.ssl, plain.ptr, plain.len, &n) == 1) return n;
 	CInt e = ossl::ssl_get_error(self.ssl, 0);
 	// a write that needs input is not a failure (only possible if the peer started something that wants a reply)
-	if (e == ossl::SSL_ERROR_WANT_READ) return WANT_INPUT~;
+	if (e == ossl::SSL_ERROR_WANT_READ)
+	{
+		// the stream has ended: no input will ever arrive, so do not invite the caller to wait for it
+		if (self.eof_fed && !self.close_notify_received) return self.fail(TRUNCATED)~;
+		return WANT_INPUT~;
+	}
 	return self.fail(map_ssl_error(e, self.ssl, false, &self.last_alert))~;
 }
 
