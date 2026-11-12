@@ -216,6 +216,7 @@ fn Context? new_server_context(ServerConfig* cfg, Allocator allocator = mem)
 	}
 	AlpnList* alpn_list = null;
 	char[] wire = wire::encode_alpn(cfg.alpn, allocator)!;
+	defer catch alloc::free(allocator, wire.ptr);
 	if (wire.len > 0)
 	{
 		alpn_list = alloc::new_try(allocator, AlpnList)!;
