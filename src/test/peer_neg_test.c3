@@ -2,7 +2,7 @@ module tls::peer_neg_test;
 
 import tls;
 import tls::peer_support;
-import std::time, std::io, std::thread;
+import std::time, std::io, std::thread, std::encoding::hex;
 
 // A client connection driven by hand over TCP, so the test can look at the engine after a failure
 // (the transport adapter frees it when a connect fails).
@@ -328,4 +328,36 @@ fn void test_peer_neg_system_store_alone_refuses_every_test_peer() @test
 		assert(!p.done, "%s was accepted with the default settings", scenario);
 		assert(p.result, "%s: no fault", scenario);
 	}
+}
+
+fn char[] selfsigned_fingerprint() => hex::tdecode(peer_support::state_value("SHA256_selfsigned"))!!;
+
+fn void test_peer_neg_pinned_self_signed_peer_is_accepted_under_any_name() @test
+{
+	if (!peer_support::peers_ready()) return;
+	char[] pin = selfsigned_fingerprint();
+	ClientConfig cfg = { .verify = PINNED_ONLY, .pin_sha256 = pin };
+	String[3] names = { "localhost", "no-such-name.example", "10.9.8.7" };
+	foreach (name : names)
+	{
+		Probe p;
+		defer p.release();
+		p.start("selfsigned", cfg, name);
+		assert(p.done, "name %s: fault %s", name, p.result);
+	}
+}
+
+fn void test_peer_neg_pin_that_does_not_match_is_refused() @test
+{
+	if (!peer_support::peers_ready()) return;
+	char[32] wrong;
+	wrong[..] = selfsigned_fingerprint()[..];
+	wrong[31] ^= 1;
+	ClientConfig cfg = { .verify = PINNED_ONLY, .pin_sha256 = wrong[..] };
+	Probe p;
+	defer p.release();
+	p.start("selfsigned", cfg, "localhost");
+	assert(!p.done);
+	assert(p.result == tls::PIN_MISMATCH, "fault %s", p.result);
+	assert(p.conn.out_pending() == 0);
 }
