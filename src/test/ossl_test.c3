@@ -2,13 +2,14 @@ module tls::tests;
 
 import tls;
 import tls::ossl;
-import libc;
+import std::os::env;
 
 // Config isolation test should run first to ensure OPENSSL_init_ssl runs with no config.
 fn void test_01_config_isolation() @test
 {
-	libc::setenv("OPENSSL_CONF", "/nonexistent/openssl.cnf", 1);
-	defer libc::unsetenv("OPENSSL_CONF");
+	// std::os::env works on every platform (libc has no setenv on Windows)
+	assert(env::set_var("OPENSSL_CONF", "/nonexistent/openssl.cnf"));
+	defer env::clear_var("OPENSSL_CONF");
 
 	// init() must succeed even if OPENSSL_CONF points to a nonexistent file.
 	if (catch err = ossl::init())
