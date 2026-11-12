@@ -100,3 +100,28 @@ fn void test_adapter_failed_connect_releases_everything() @test
 	t.free();
 	assert(ta.allocation_count() == 0);
 }
+
+fn void test_adapter_read_timeout_is_a_total() @test
+{
+	if (!loopback::pki_ready()) return;
+	Rig r;
+	r.open(loopback::client_cfg());
+	defer r.close();
+	// 300 bytes from the server, handed over one byte per read and slowly: each wait is short, the sum is not
+	char[300] data;
+	data[..] = 'z';
+	r.end.server.write(&data)!!;
+	r.end.collect();
+	r.end.read_limit = 1;
+	r.end.read_delay_ms = 5;
+	char[512] buf;
+	assert(@catch(r.t.read(&buf, 50 * time::MS)) == tls::TIMEOUT);
+	// what arrived stays in the engine: with time to spare the same read finishes the record
+	usz total = 0;
+	while (total < 300)
+	{
+		total += r.t.read(buf[total..], 10 * time::SEC)!!;
+	}
+	assert(total == 300);
+	assert(buf[0] == 'z' && buf[299] == 'z');
+}

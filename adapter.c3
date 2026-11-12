@@ -129,16 +129,20 @@ fn usz? TlsTransport.read(&self, char[] buf, Duration timeout) @dynamic
 	if (self.closed) return CLOSED~;
 	if (self.broken) return self.broken~;
 	if (buf.len == 0) return 0;
+	Clock started = clock::now();
 	while (true)
 	{
 		usz? n = self.conn.read(buf);
 		if (catch err = n)
 		{
 			// the engine may have queued something even while it had nothing to hand back: key updates, alerts
-			(void)self.flush(timeout);
+			Duration? left = time_left(started, timeout);
+			if (try d = left) (void)self.flush(d);
 			if (err == WANT_INPUT)
 			{
-				self.pull(timeout)!;
+				// the whole call gets `timeout`, however slowly the peer delivers; a partial record stays in the
+				// engine, so a later read carries on where this one stopped
+				self.pull(time_left(started, timeout)!)!;
 				continue;
 			}
 			if (err == CLOSED) self.peer_closed = true;
@@ -146,7 +150,8 @@ fn usz? TlsTransport.read(&self, char[] buf, Duration timeout) @dynamic
 		}
 		// plaintext that was already decrypted is never thrown away because the network refused our reply; the failure
 		// is remembered and the next call reports it
-		(void)self.flush(timeout);
+		Duration? left = time_left(started, timeout);
+		if (try d = left) (void)self.flush(d);
 		return n;
 	}
 }
@@ -158,6 +163,7 @@ fn void? TlsTransport.write(&self, char[] data, Duration timeout) @dynamic
 {
 	if (self.closed || self.peer_closed) return CLOSED~;
 	if (self.broken) return self.broken~;
+	Clock started = clock::now();
 	usz done = 0;
 	while (done < data.len)
 	{
@@ -168,12 +174,12 @@ fn void? TlsTransport.write(&self, char[] data, Duration timeout) @dynamic
 			// the engine wants input first (the peer started something that needs an answer): get it and try again
 			if (err == WANT_INPUT)
 			{
-				self.pull(timeout)!;
+				self.pull(time_left(started, timeout)!)!;
 				continue;
 			}
 			return err~;
 		}
-		self.flush(timeout)!;
+		self.flush(time_left(started, timeout)!)!;
 		done += piece;
 	}
 }
