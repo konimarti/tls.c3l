@@ -5,7 +5,10 @@
     "freebsd-x64": {
       "link-args": [],
       "dependencies": [],
-      "linked-libraries": []
+      "linked-libraries": [
+        "ssl",
+        "crypto"
+      ]
     },
     "linux-aarch64": {
       "link-args": [
@@ -72,12 +75,18 @@
     "netbsd-x64": {
       "link-args": [],
       "dependencies": [],
-      "linked-libraries": []
+      "linked-libraries": [
+        "ssl",
+        "crypto"
+      ]
     },
     "openbsd-x64": {
       "link-args": [],
       "dependencies": [],
-      "linked-libraries": []
+      "linked-libraries": [
+        "ssl",
+        "crypto"
+      ]
     },
     "windows-aarch64": {
       "link-args": [],

@@ -130,6 +130,7 @@ Every error is a C3 fault of module `tls`; OpenSSL's detail text is kept in `Con
 | `ALPN_MISMATCH`, `NO_PEER_CERT` | required ALPN not selected; server side: no client certificate |
 | `CONFIG_INVALID`, `CA_LOAD_FAILED`, `CERT_LOAD_FAILED`, `KEY_LOAD_FAILED` | configuration and files |
 | `SESSION_INVALID`, `NOT_CONNECTED` | session problems, use before the handshake |
+| `OUT_OF_MEMORY`, `LIBRARY_INIT_FAILED` | an allocation failed; OpenSSL is missing, older than 3.0, or did not start |
 
 ### Installing OpenSSL
 
@@ -144,6 +145,9 @@ OpenSSL 3.0 or later is needed at run time (3.2 or later for the Windows system 
   `org.openssl.winstore://` URI, which needs OpenSSL 3.2 or later; with an older one pass `ca_file`.
 
 macOS and Windows are type-checked only so far.
+The link line in this repository's own `project.json` is for Linux (`-l:libssl.so.3`); to build and test the repository itself
+on macOS or Windows, replace it as the CI jobs do (see `.github/workflows/ci.yml`). Consumers use the per-platform entries of
+`manifest.json`. The BSD entries link `-lssl -lcrypto` and have never been built.
 
 ### The `tlsc` tool
 
