@@ -36,9 +36,34 @@ SCENARIOS = {
     # prints the messages it receives, so a test can read what the client really sent
     "trace13": ("server", ["-tls1_3", "-www", "-trace"]),
 }
+# peers with a broken or unusual certificate or protocol. They print the messages they get (-msg), so the tests can see
+# that a rejected handshake ended with an alert and not with silence. A name with ":" is certificate:key, with
+# "legacy" the OpenSSL configuration that lets s_server speak TLS 1.1.
+LEGACY = "legacy"
+LOW = ["-cipher", "DEFAULT:@SECLEVEL=0"]
+NEGATIVE = {
+    "expired": ("expired", ["-www", "-msg"], None),
+    "notyet": ("notyet", ["-www", "-msg"], None),
+    "wronghost": ("wronghost", ["-www", "-msg"], None),
+    "untrusted": ("untrusted", ["-www", "-msg"], None),
+    "selfsigned": ("selfsigned", ["-www", "-msg"], None),
+    "noeku": ("wrong-eku", ["-www", "-msg"], None),
+    "badint": ("bad-leaf", ["-www", "-msg", "-cert_chain", "@PKI/bad-intermediate.pem"], None),
+    "cnonly": ("cn-only", ["-www", "-msg"], None),
+    "dnsonly": ("dns-only", ["-www", "-msg"], None),
+    "wildcard": ("wildcard", ["-www", "-msg"], None),
+    "weakkey": ("rsa1024", ["-www", "-msg"] + LOW, None),
+    "sha1sig": ("sha1-signed", ["-www", "-msg"] + LOW, None),
+    "tls11": ("server", ["-tls1_1", "-www", "-msg"] + LOW, LEGACY),
+    "mtls-wrongca": ("server", ["-tls1_3", "-www", "-msg", "-Verify", "1", "-verify_return_error", "-CAfile", "@CA"], None),
+    "mtls12": ("server", ["-tls1_2", "-www", "-msg", "-Verify", "1", "-verify_return_error", "-CAfile", "@CA"], None),
+}
+for _n, (_c, _e, _x) in NEGATIVE.items():
+    SCENARIOS[_n] = (_c, _e)
+CONFS = {LEGACY: ("openssl-legacy.cnf", "MinProtocol = TLSv1\nCipherString = DEFAULT:@SECLEVEL=0\n")}
 # peers written in Python: raw TCP or the ssl module, each behaves in one specific way
 PYTHON_PEERS = ["silent", "garbage", "echo12", "dropper", "closer", "sni"]  # sni also echoes (TLS 1.3)
-DEFAULT = ["tls13", "tls12", "rsa13", "rsa12", "rev13", "ip", "trace13"] + PYTHON_PEERS
+DEFAULT = ["tls13", "tls12", "rsa13", "rsa12", "rev13", "ip", "trace13"] + PYTHON_PEERS + list(NEGATIVE)
 
 
 def free_port():
@@ -103,6 +128,9 @@ def start(names):
     kill_recorded()
     os.makedirs(OUT, exist_ok=True)
     env = dict(os.environ, OPENSSL_CONF=os.path.join(PKI, "openssl-test.cnf"))
+    for fname, body in CONFS.values():
+        with open(os.path.join(OUT, fname), "w") as f:
+            f.write("openssl_conf = d\n[d]\nssl_conf = s\n[s]\nsystem_default = sd\n[sd]\n" + body)
     pids = []
     lines = ["CA=" + os.path.join(PKI, "ca.pem"), "DIR=" + PKI, "OUT=" + OUT]
     try:
@@ -113,10 +141,14 @@ def start(names):
                 cmd = [sys.executable, "-I", os.path.abspath(__file__), "serve", name, str(port)]
             else:
                 cert, extra = SCENARIOS[name]
+                conf = NEGATIVE.get(name, (None, None, None))[2]
+                peer_env = dict(env, OPENSSL_CONF=os.path.join(OUT, CONFS[conf][0])) if conf else env
+                extra = [os.path.join(PKI, "ca.pem") if a == "@CA" else a.replace("@PKI", PKI) for a in extra]
+                cert_file, key_file = cert.split(":") if ":" in cert else (cert + ".pem", cert + ".key")
                 cmd = (["stdbuf", "-oL", "-eL"] if shutil.which("stdbuf") else []) + ["openssl", "s_server", "-quiet",
-                       "-accept", "127.0.0.1:%d" % port, "-cert", os.path.join(PKI, cert + ".pem"),
-                       "-key", os.path.join(PKI, cert + ".key")] + extra
-            proc = subprocess.Popen(cmd, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                       "-accept", "127.0.0.1:%d" % port, "-cert", os.path.join(PKI, cert_file),
+                       "-key", os.path.join(PKI, key_file)] + extra
+            proc = subprocess.Popen(cmd, env=peer_env if name not in PYTHON_PEERS else env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                                     start_new_session=True)
             pids.append(proc.pid)
             with open(PIDFILE, "w") as f:
