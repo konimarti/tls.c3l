@@ -227,8 +227,17 @@ fn void test_validate_server_name_table() @test
 
 	assert(tls::validate_server_name("127.0.0.1")!!.kind == IPV4);
 	assert(tls::validate_server_name("10.20.30.40")!!.kind == IPV4);
-	assert(tls::validate_server_name("999.1.1.1")!!.kind == DNS);   // not an address: an ordinary (odd) name
-	assert(tls::validate_server_name("1.2.3")!!.kind == DNS);
+	// malformed addresses are not host names: the last label is never all digits
+	assert(@catch(tls::validate_server_name("999.1.1.1")) == tls::CONFIG_INVALID);
+	assert(@catch(tls::validate_server_name("1.2.3")) == tls::CONFIG_INVALID);
+	assert(@catch(tls::validate_server_name("1.2.3.4.5")) == tls::CONFIG_INVALID);
+	assert(tls::validate_server_name("1.2.3.4.example")!!.kind == DNS);
+	// labels do not start or end with a hyphen
+	assert(@catch(tls::validate_server_name("-a.example")) == tls::CONFIG_INVALID);
+	assert(@catch(tls::validate_server_name("a-.example")) == tls::CONFIG_INVALID);
+	assert(@catch(tls::validate_server_name("a.-example")) == tls::CONFIG_INVALID);
+	assert(@catch(tls::validate_server_name("-")) == tls::CONFIG_INVALID);
+	assert(tls::validate_server_name("a-b.example")!!.kind == DNS);
 	assert(tls::validate_server_name("::1")!!.kind == IPV6);
 	assert(tls::validate_server_name("2001:db8::1")!!.kind == IPV6);
 	assert(@catch(tls::validate_server_name("fe80::1%eth0")) == tls::CONFIG_INVALID);
@@ -522,4 +531,13 @@ fn void test_engine_close_before_the_handshake_prevents_it() @test
 	assert(!d.handshake()!!);
 	d.close_notify()!!;
 	assert(@catch(d.handshake()) == tls::CLOSED);
+}
+
+fn void test_engine_address_with_a_leading_zero_is_refused() @test
+{
+	// classified as an address by the name check, refused by OpenSSL when it is set as the expected address
+	assert(tls::validate_server_name("01.2.3.4")!!.kind == IPV4);
+	Context ctx = client_ctx({});
+	defer ctx.free();
+	assert(@catch(ctx.new_client_conn("01.2.3.4")) == tls::CONFIG_INVALID);
 }

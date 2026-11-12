@@ -140,7 +140,26 @@ fn NamePlan? validate_server_name(String name)
 		if (++label > MAX_LABEL_LEN) return CONFIG_INVALID~;
 	}
 	if (label == 0) return CONFIG_INVALID~;
+	// a label neither starts nor ends with a hyphen (RFC 1123 2.1)
+	usz start = 0;
+	for (usz i = 0; i <= n.len; i++)
+	{
+		if (i == n.len || n[i] == '.')
+		{
+			if (n[start] == '-' || n[i - 1] == '-') return CONFIG_INVALID~;
+			start = i + 1;
+		}
+	}
 	if (is_ipv4_literal(n)) return { IPV4, n };
+	// the last label of a host name is never all digits: such a string is a malformed address, not a name (RFC 1123 2.1)
+	usz last = n.len;
+	while (last > 0 && n[last - 1] != '.') last--;
+	bool numeric = true;
+	foreach (c : n[last..])
+	{
+		if (!is_digit(c)) numeric = false;
+	}
+	if (numeric) return CONFIG_INVALID~;
 	return { DNS, n };
 }
 
