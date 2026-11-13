@@ -123,7 +123,9 @@ jobs:
           bash tests/pki/make-pki.sh
 
       # includes version_matches_project_json
+      # a step limit: a test that hangs ends this step with the log up to the stuck test, not the whole job as "cancelled"
       - name: Unit tests
+        timeout-minutes: 10
         env:
           TLS_REQUIRE_PKI: "1"
         run: c3c test
@@ -192,6 +194,7 @@ jobs:
 
       # includes version_matches_project_json; the peer and certificate tests skip on this job
       - name: Unit tests
+        timeout-minutes: 10
         run: c3c test
 
       - name: Build the tool
