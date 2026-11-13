@@ -116,7 +116,10 @@ fn void test_adapter_read_timeout_is_a_total() @test
 	r.end.read_delay_ms = 5;
 	char[512] buf;
 	assert(@catch(r.t.read(&buf, 50 * time::MS)) == tls::TIMEOUT);
-	// what arrived stays in the engine: with time to spare the same read finishes the record
+	// what arrived stays in the engine: with time to spare the same read finishes the record. The peer stays
+	// byte-at-a-time but without the delay: a runner whose sleeps overshoot would otherwise need seconds for the
+	// ~320 reads and the assertion would measure the runner, not the library.
+	r.end.read_delay_ms = 0;
 	usz total = 0;
 	while (total < 300)
 	{
