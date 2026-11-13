@@ -102,11 +102,20 @@ fn void test_verify_intermediate_that_is_not_a_ca() @test
 fn void test_weak_server_certificates_are_refused_when_loaded() @test
 {
 	if (!loopback::pki_ready()) return;
-	// observed on OpenSSL 3.5.5: at the default security level neither a 1024-bit RSA key nor a SHA-1 signature is accepted
+	// a 1024-bit RSA key is refused at the default security level of every build seen (Debian's 3.0 and 3.5, Homebrew's 3.5)
 	ServerConfig weak_key = loopback::server_cfg("rsa1024");
 	assert(@catch(tls::new_server_context(&weak_key)) == tls::CERT_LOAD_FAILED);
+	// A SHA-1 signature is OpenSSL's policy, and the builds differ: Debian and Ubuntu refuse such a certificate when it is
+	// loaded, the upstream build that Homebrew ships loads it. The library sets no security level of its own, so it
+	// follows the build; what it must never do is fail with anything but the load fault.
 	ServerConfig weak_signature = loopback::server_cfg("sha1-signed");
-	assert(@catch(tls::new_server_context(&weak_signature)) == tls::CERT_LOAD_FAILED);
+	Context? ctx = tls::new_server_context(&weak_signature);
+	if (try c = ctx)
+	{
+		c.free();
+		return;
+	}
+	assert(@catch(ctx) == tls::CERT_LOAD_FAILED);
 }
 
 // ---- host names ----
