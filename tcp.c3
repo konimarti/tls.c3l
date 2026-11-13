@@ -10,6 +10,32 @@ const CInt EPIPE = 32; // the same value on Linux and macOS
 const CInt DARWIN_SOL_SOCKET = 0xffff;
 const CInt DARWIN_SO_NOSIGPIPE = 0x1022;
 
+// Only called on Windows (ws2_32 is linked by the standard library's socket code); never referenced elsewhere.
+extern fn CInt wsa_last_error() @cname("WSAGetLastError");
+
+// The fault of the failed socket call that just returned. Windows reports a connection the peer closed or reset as
+// WSAECONNABORTED (10053), WSAECONNRESET (10054) or WSAESHUTDOWN (10058); the standard library only knows the middle one.
+fn fault tcp_fault()
+{
+$if env::WIN32:
+	CInt code = wsa_last_error();
+	if (code == 10053 || code == 10054 || code == 10058) return net::CONNECTION_RESET;
+$endif
+	return os::socket_error();
+}
+
+// One recv(); a closed or reset connection is net::CONNECTION_RESET on every platform.
+fn sz? tcp_recv(TcpSocket* sock, char[] buf)
+{
+$if env::WIN32:
+	sz n = libc::recv(sock.sock, buf.ptr, (int)buf.len, 0);
+	if (n < 0) return tcp_fault()~;
+	return n;
+$else
+	return sock.read(buf);
+$endif
+}
+
 struct TcpTransport (Transport)
 {
 	TcpSocket sock;
@@ -66,7 +92,7 @@ fn usz? TcpTransport.read(&self, char[] buf, Duration timeout) @dynamic
 	while (true)
 	{
 		tcp_wait(self.sock.sock, ANY_READ, timeout)!;
-		sz? n = self.sock.read(buf);
+		sz? n = tcp_recv(&self.sock, buf);
 		if (catch err = n)
 		{
 			if (err == io::INTERRUPTED) continue; // a signal, not a result: wait again
@@ -78,7 +104,7 @@ fn usz? TcpTransport.read(&self, char[] buf, Duration timeout) @dynamic
 	}
 }
 
-// One send() that never raises SIGPIPE where the platform lets us ask for that.
+// One send() that never raises SIGPIPE where the platform lets us ask for that (Windows has no SIGPIPE).
 fn sz? tcp_send(TcpSocket* sock, char[] chunk)
 {
 $if env::LINUX || env::DARWIN:
@@ -96,7 +122,9 @@ $endif
 	}
 	return n;
 $else
-	return sock.write(chunk);
+	sz n = libc::send(sock.sock, chunk.ptr, (int)chunk.len, 0);
+	if (n < 0) return tcp_fault()~;
+	return n;
 $endif
 }
 

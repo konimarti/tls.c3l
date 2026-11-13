@@ -142,7 +142,7 @@ fn void test_tcp_write_to_reset_peer_is_closed() @test
 	{
 		last = @catch(p.client.write(&chunk, 2 * time::SEC));
 	}
-	assert(last == tls::CLOSED);
+	assert(last == tls::CLOSED, "fault %s", last);
 }
 
 fn void test_mem_partial_reads() @test
