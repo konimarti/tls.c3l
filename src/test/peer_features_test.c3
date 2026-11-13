@@ -332,8 +332,22 @@ fn void test_peer_groups_restricted_to_one_curve() @test
 	}
 	assert(after_p256 > p256, "the narrow hello never showed up in the peer's log");
 	assert(peer_support::log_count("trace13", "NamedGroup: X25519MLKEM768") == hybrid, "the hybrid group was offered");
-	// the default offer includes it, and the peer accepts that too
+	// the default offer includes the hybrid group when the library knows it (OpenSSL 3.5 and later; 3.0 does not),
+	// and the peer accepts that too. Whether it is known is asked of the library, not assumed from a version number.
 	get_page("trace13", with_ca());
+	if (!hybrid_group_known())
+	{
+		// no hybrid to offer: the default hello (which does offer P-256) must not claim one either; wait for it first
+		usz p256_now = after_p256;
+		for (int i = 0; i < 100 && p256_now == after_p256; i++)
+		{
+			thread::sleep_ms(50)!!;
+			p256_now = peer_support::log_count("trace13", "NamedGroup: secp256r1");
+		}
+		assert(p256_now > after_p256, "the default hello never showed up in the peer's log");
+		assert(peer_support::log_count("trace13", "NamedGroup: X25519MLKEM768") == hybrid);
+		return;
+	}
 	usz after = hybrid;
 	for (int i = 0; i < 100 && after == hybrid; i++)
 	{
@@ -341,6 +355,17 @@ fn void test_peer_groups_restricted_to_one_curve() @test
 		after = peer_support::log_count("trace13", "NamedGroup: X25519MLKEM768");
 	}
 	assert(after > hybrid);
+}
+
+// True when the linked OpenSSL accepts the hybrid group by name (a context refuses an unknown group).
+fn bool hybrid_group_known()
+{
+	ClientConfig probe = with_ca();
+	probe.groups = "X25519MLKEM768";
+	Context? ctx = tls::new_client_context(&probe);
+	if (catch ctx) return false;
+	ctx.free();
+	return true;
 }
 
 fn void test_peer_required_alpn_failure_ends_with_close_notify() @test
