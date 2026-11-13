@@ -80,7 +80,7 @@ jobs:
         run: python3 -I tests/peer/run.py run -- c3c test --sanitize=address
 
   build-macos:
-    runs-on: macos-14
+    runs-on: macos-latest
     timeout-minutes: 30
     defaults:
       run:
