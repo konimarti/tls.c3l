@@ -67,6 +67,7 @@ fn fault map_ssl_reason(ulong err, bool handshaking, char* out_alert = null)
 		case 244: // unexpected message
 		case 156: // http request
 		case 160: // length too short
+		case 146: // data length too long (what newer 3.5 releases say for a record longer than allowed)
 			return PROTOCOL_ERROR;
 		case 193: // no shared cipher
 			return NO_SHARED_CIPHER;

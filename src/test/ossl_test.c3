@@ -199,6 +199,9 @@ fn void test_09_reason_mapping() @test
 	assert(tls::map_ssl_reason((20 << 23) | 147, false) == tls::PROTOCOL_ERROR);
 	assert(tls::map_ssl_reason((20 << 23) | 281, false) == tls::PROTOCOL_ERROR);
 	assert(tls::map_ssl_reason((20 << 23) | 198, false) == tls::PROTOCOL_ERROR);
+	// a record longer than allowed, as newer OpenSSL 3.5 releases name it (data length too long): never a generic failure
+	assert(tls::map_ssl_reason((20 << 23) | 146, true) == tls::PROTOCOL_ERROR);
+	assert(tls::map_ssl_reason((20 << 23) | 146, false) == tls::PROTOCOL_ERROR);
 
 	// Generic handshake failure vs openssl error
 	assert(tls::map_ssl_reason((20 << 23) | 229, true) == tls::HANDSHAKE_FAILED);
