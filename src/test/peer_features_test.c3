@@ -314,47 +314,49 @@ fn void get_page(String scenario, ClientConfig cfg)
 	s.t.read(&buf, 5 * time::SEC)!!;
 }
 
+// Waits (bounded) until the peer's log holds more than `before` copies of `needle`; returns the new count.
+fn usz wait_log_growth(String scenario, String needle, usz before)
+{
+	usz now = before;
+	for (int i = 0; i < 100 && now == before; i++)
+	{
+		thread::sleep_ms(50)!!;
+		now = peer_support::log_count(scenario, needle);
+	}
+	return now;
+}
+
 fn void test_peer_groups_restricted_to_one_curve() @test
 {
 	if (!peer_support::peers_ready()) return;
+	// The peer prints every message it gets. Its reply (ServerHello) comes after the whole ClientHello in the log, so
+	// once a new ServerHello is there, everything the hello contained is there too and an absence is a fact, not a lag.
+	// (Only key_share entries are printed as "NamedGroup: ..."; supported_groups entries are plain names, and the
+	// default key_share holds just one classical group on OpenSSL 3.0, so no group name is a marker of every hello.)
 	usz hybrid = peer_support::log_count("trace13", "NamedGroup: X25519MLKEM768");
 	usz p256 = peer_support::log_count("trace13", "NamedGroup: secp256r1");
+	usz replies = peer_support::log_count("trace13", "ServerHello, Length=");
 	ClientConfig narrow = with_ca();
 	narrow.groups = "P-256";
 	get_page("trace13", narrow);
-	// wait until the narrow hello has been printed (it offers P-256 only); the log is ordered, so everything that hello
-	// contained is in the file by then, and the absence of the hybrid group is a fact, not a lag
-	usz after_p256 = p256;
-	for (int i = 0; i < 100 && after_p256 == p256; i++)
-	{
-		thread::sleep_ms(50)!!;
-		after_p256 = peer_support::log_count("trace13", "NamedGroup: secp256r1");
-	}
-	assert(after_p256 > p256, "the narrow hello never showed up in the peer's log");
+	usz replies_narrow = wait_log_growth("trace13", "ServerHello, Length=", replies);
+	assert(replies_narrow > replies, "the reply to the narrow hello never showed up in the peer's log");
+	assert(peer_support::log_count("trace13", "NamedGroup: secp256r1") > p256, "the narrow hello did not offer P-256");
 	assert(peer_support::log_count("trace13", "NamedGroup: X25519MLKEM768") == hybrid, "the hybrid group was offered");
 	// the default offer includes the hybrid group when the library knows it (OpenSSL 3.5 and later; 3.0 does not),
 	// and the peer accepts that too. Whether it is known is asked of the library, not assumed from a version number.
 	get_page("trace13", with_ca());
-	if (!hybrid_group_known())
+	usz replies_default = wait_log_growth("trace13", "ServerHello, Length=", replies_narrow);
+	assert(replies_default > replies_narrow, "the reply to the default hello never showed up in the peer's log");
+	usz after = peer_support::log_count("trace13", "NamedGroup: X25519MLKEM768");
+	if (hybrid_group_known())
 	{
-		// no hybrid to offer: the default hello (which does offer P-256) must not claim one either; wait for it first
-		usz p256_now = after_p256;
-		for (int i = 0; i < 100 && p256_now == after_p256; i++)
-		{
-			thread::sleep_ms(50)!!;
-			p256_now = peer_support::log_count("trace13", "NamedGroup: secp256r1");
-		}
-		assert(p256_now > after_p256, "the default hello never showed up in the peer's log");
-		assert(peer_support::log_count("trace13", "NamedGroup: X25519MLKEM768") == hybrid);
-		return;
+		assert(after > hybrid, "the default hello did not offer the hybrid group");
 	}
-	usz after = hybrid;
-	for (int i = 0; i < 100 && after == hybrid; i++)
+	else
 	{
-		thread::sleep_ms(50)!!;
-		after = peer_support::log_count("trace13", "NamedGroup: X25519MLKEM768");
+		assert(after == hybrid, "a hybrid group was offered that the library does not know");
 	}
-	assert(after > hybrid);
 }
 
 // True when the linked OpenSSL accepts the hybrid group by name (a context refuses an unknown group).
